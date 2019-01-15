@@ -1,0 +1,4 @@
+usr/include/polkit-1/polkitbackend/
+usr/lib/*/libpolkit-backend*.a
+usr/lib/*/libpolkit-backend*.so
+usr/lib/*/pkgconfig/polkit-backend*.pc
