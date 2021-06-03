@@ -12,8 +12,8 @@ And the above original email report is included in full in a new comment.
 
 Reported-by: Jann Horn <jannh@google.com>
 
-Closes: https://gitlab.freedesktop.org/polkit/polkit/issues/75
-(cherry picked from commit 6cc6aafee135ba44ea748250d7d29b562ca190e3)
+Bug: https://gitlab.freedesktop.org/polkit/polkit/issues/75
+Origin: upstream, 0.116, commit:6cc6aafee135ba44ea748250d7d29b562ca190e3
 ---
  src/polkit/polkitsubject.c                         |  2 +
  src/polkit/polkitunixprocess.c                     | 71 +++++++++++++++++++++-
@@ -34,7 +34,7 @@ index 78ec745..fadcfe9 100644
   * This function can be used in e.g. g_hash_table_new().
   *
 diff --git a/src/polkit/polkitunixprocess.c b/src/polkit/polkitunixprocess.c
-index 4a42567..53537fa 100644
+index 02a083f..fc5afa1 100644
 --- a/src/polkit/polkitunixprocess.c
 +++ b/src/polkit/polkitunixprocess.c
 @@ -44,7 +44,10 @@
