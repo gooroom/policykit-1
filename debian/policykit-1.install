@@ -2,7 +2,8 @@ debian/polkit.service lib/systemd/system/
 etc/pam.d/
 etc/polkit-1/
 usr/bin/
-usr/libexec/
+usr/lib/*/polkit-1/extensions/*.so
+usr/lib/policykit-1/
 usr/share/dbus-1/
 usr/share/gettext/
 usr/share/locale/

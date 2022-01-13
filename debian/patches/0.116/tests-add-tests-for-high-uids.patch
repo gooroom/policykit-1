@@ -53,7 +53,7 @@ index bc64c5e..a35f9a3 100644
 +ResultInactive=auth_self
 +ResultActive=yes
 diff --git a/test/polkitbackend/polkitbackendlocalauthoritytest.c b/test/polkitbackend/polkitbackendlocalauthoritytest.c
-index 617c254..b0bfefe 100644
+index 617c254..299da5d 100644
 --- a/test/polkitbackend/polkitbackendlocalauthoritytest.c
 +++ b/test/polkitbackend/polkitbackendlocalauthoritytest.c
 @@ -226,7 +226,46 @@ struct auth_context check_authorization_test_data [] = {

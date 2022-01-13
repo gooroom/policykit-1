@@ -21,10 +21,10 @@ based on creating a user with a UID up to but not including 4294967295
  1 file changed, 2 insertions(+), 7 deletions(-)
 
 diff --git a/src/polkit/polkitunixprocess.c b/src/polkit/polkitunixprocess.c
-index fc5afa1..53537fa 100644
+index 02a083f..4a42567 100644
 --- a/src/polkit/polkitunixprocess.c
 +++ b/src/polkit/polkitunixprocess.c
-@@ -216,14 +216,9 @@ polkit_unix_process_set_property (GObject      *object,
+@@ -147,14 +147,9 @@ polkit_unix_process_set_property (GObject      *object,
        polkit_unix_process_set_pid (unix_process, g_value_get_int (value));
        break;
  
