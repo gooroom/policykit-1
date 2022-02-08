@@ -1,3 +1,10 @@
+policykit-1 (0.105-25+nDeb10u1+grm2u1) buster-security; urgency=medium
+
+  [ heejun.jang ]
+  * [0c748717] Insert implicit authorization information in details
+
+ -- Gooroom Autobuilder <jenkins@gooroom.kr>  Tue, 08 Feb 2022 12:30:23 +0900
+
 policykit-1 (0.105-25+deb10u1) buster-security; urgency=high
 
   * Non-maintainer upload by the Security Team.
