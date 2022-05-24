@@ -78,9 +78,9 @@ Package: libpolkit-gobject-1-dev
 Architecture: any
 Section: libdevel
 Depends:
- gir1.2-polkit-1.0 (= ${binary:Version}),
+ gir1.2-polkit-1.0 (>= ${binary:Version}),
  libglib2.0-dev,
- libpolkit-gobject-1-0 (= ${binary:Version}),
+ libpolkit-gobject-1-0 (>= ${binary:Version}),
  ${misc:Depends},
 Description: PolicyKit Authorization API - development files
  PolicyKit is a toolkit for defining and handling the policy that
@@ -108,8 +108,8 @@ Package: libpolkit-agent-1-dev
 Architecture: any
 Section: libdevel
 Depends:
- gir1.2-polkit-1.0 (= ${binary:Version}),
- libpolkit-agent-1-0 (= ${binary:Version}),
+ gir1.2-polkit-1.0 (>= ${binary:Version}),
+ libpolkit-agent-1-0 (>= ${binary:Version}),
  libpolkit-gobject-1-dev,
  ${misc:Depends},
 Description: PolicyKit Authentication Agent API - development files
