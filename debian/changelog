@@ -1,3 +1,13 @@
+policykit-1 (0.105-31+deb11u1+grm3u1) unstable; urgency=medium
+
+  [ Haru ]
+  * [c0b0f090] Insert implicit authorization in details
+
+  [ jongkyung.woo ]
+  * [12d183eb] Added Local-Privilege-Escalation-in-polkit-s-pkexec-CVE-20.patch (CVE-2021-4034)
+
+ -- Gooroom Autobuilder <jenkins@gooroom.kr>  Thu, 26 May 2022 18:56:20 +0900
+
 policykit-1 (0.105-31) unstable; urgency=medium
 
   [ Salvatore Bonaccorso ]
