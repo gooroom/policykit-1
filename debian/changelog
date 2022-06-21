@@ -1,3 +1,9 @@
+policykit-1 (0.105-31+nDeb11u1+grm3u1) unstable; urgency=medium
+
+  * Rebuild 
+
+ -- Gooroom Autobuilder <jenkins@gooroom.kr>  Tue, 21 Jun 2022 18:17:16 +0900
+
 policykit-1 (0.105-31+deb11u1+grm3u1) unstable; urgency=medium
 
   [ Haru ]
