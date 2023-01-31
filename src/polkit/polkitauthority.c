@@ -680,10 +680,10 @@ polkit_authority_enumerate_actions (PolkitAuthority     *authority,
  *
  * Finishes retrieving all registered actions.
  *
- * Returns: (transfer full): A list of #PolkitActionDescription
- * objects or %NULL if @error is set. The returned list should be
- * freed with g_list_free() after each element have been freed with
- * g_object_unref().
+ * Returns: (element-type Polkit.ActionDescription) (transfer full): A list of
+ * #PolkitActionDescription objects or %NULL if @error is set. The returned
+ * list should be freed with g_list_free() after each element have been freed
+ * with g_object_unref().
  **/
 GList *
 polkit_authority_enumerate_actions_finish (PolkitAuthority *authority,
@@ -715,7 +715,6 @@ polkit_authority_enumerate_actions_finish (PolkitAuthority *authority,
   while ((child = g_variant_iter_next_value (&iter)) != NULL)
     {
       ret = g_list_prepend (ret, polkit_action_description_new_for_gvariant (child));
-      g_variant_ref_sink (child);
       g_variant_unref (child);
     }
   ret = g_list_reverse (ret);
@@ -736,9 +735,9 @@ polkit_authority_enumerate_actions_finish (PolkitAuthority *authority,
  * is blocked until a reply is received. See
  * polkit_authority_enumerate_actions() for the asynchronous version.
  *
- * Returns: (transfer full): A list of #PolkitActionDescription or
- * %NULL if @error is set. The returned list should be freed with
- * g_list_free() after each element have been freed with
+ * Returns: (element-type Polkit.ActionDescription) (transfer full): A list of
+ * #PolkitActionDescription or %NULL if @error is set. The returned list should
+ * be freed with g_list_free() after each element have been freed with
  * g_object_unref().
  **/
 GList *
@@ -887,8 +886,6 @@ polkit_authority_check_authorization (PolkitAuthority               *authority,
                                       GAsyncReadyCallback            callback,
                                       gpointer                       user_data)
 {
-  GVariant *subject_value;
-  GVariant *details_value;
   CheckAuthData *data;
 
   g_return_if_fail (POLKIT_IS_AUTHORITY (authority));
@@ -896,11 +893,6 @@ polkit_authority_check_authorization (PolkitAuthority               *authority,
   g_return_if_fail (action_id != NULL);
   g_return_if_fail (details == NULL || POLKIT_IS_DETAILS (details));
   g_return_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
-
-  subject_value = polkit_subject_to_gvariant (subject);
-  details_value = polkit_details_to_gvariant (details);
-  g_variant_ref_sink (subject_value);
-  g_variant_ref_sink (details_value);
 
   data = g_new0 (CheckAuthData, 1);
   data->authority = g_object_ref (authority);
@@ -916,9 +908,9 @@ polkit_authority_check_authorization (PolkitAuthority               *authority,
   g_dbus_proxy_call (authority->proxy,
                      "CheckAuthorization",
                      g_variant_new ("(@(sa{sv})s@a{ss}us)",
-                                    subject_value,
+                                    polkit_subject_to_gvariant (subject), /* A floating value */
                                     action_id,
-                                    details_value,
+                                    polkit_details_to_gvariant (details), /* A floating value */
                                     flags,
                                     data->cancellation_id != NULL ? data->cancellation_id : ""),
                      G_DBUS_CALL_FLAGS_NONE,
@@ -926,8 +918,6 @@ polkit_authority_check_authorization (PolkitAuthority               *authority,
                      cancellable,
                      (GAsyncReadyCallback) check_authorization_cb,
                      data);
-  g_variant_unref (subject_value);
-  g_variant_unref (details_value);
 }
 
 /**
@@ -1039,6 +1029,10 @@ polkit_authority_check_authorization_sync (PolkitAuthority               *author
  *
  * Asynchronously registers an authentication agent.
  *
+ * Note that this should be called by the same effective UID which will be
+ * the real UID using the #PolkitAgentSession API or otherwise calling
+ * polkit_authority_authentication_agent_response().
+ *
  * When the operation is finished, @callback will be invoked in the
  * <link linkend="g-main-context-push-thread-default">thread-default
  * main loop</link> of the thread you are calling this method
@@ -1055,20 +1049,16 @@ polkit_authority_register_authentication_agent (PolkitAuthority      *authority,
                                                 GAsyncReadyCallback   callback,
                                                 gpointer              user_data)
 {
-  GVariant *subject_value;
-
   g_return_if_fail (POLKIT_IS_AUTHORITY (authority));
   g_return_if_fail (POLKIT_IS_SUBJECT (subject));
   g_return_if_fail (locale != NULL);
   g_return_if_fail (g_variant_is_object_path (object_path));
   g_return_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
 
-  subject_value = polkit_subject_to_gvariant (subject);
-  g_variant_ref_sink (subject_value);
   g_dbus_proxy_call (authority->proxy,
                      "RegisterAuthenticationAgent",
                      g_variant_new ("(@(sa{sv})ss)",
-                                    subject_value,
+                                    polkit_subject_to_gvariant (subject), /* A floating value */
                                     locale,
                                     object_path),
                      G_DBUS_CALL_FLAGS_NONE,
@@ -1079,7 +1069,6 @@ polkit_authority_register_authentication_agent (PolkitAuthority      *authority,
                                                 callback,
                                                 user_data,
                                                 polkit_authority_register_authentication_agent));
-  g_variant_unref (subject_value);
 }
 
 /**
@@ -1130,7 +1119,13 @@ polkit_authority_register_authentication_agent_finish (PolkitAuthority *authorit
  * @cancellable: (allow-none): A #GCancellable or %NULL.
  * @error: (allow-none): Return location for error or %NULL.
  *
- * Registers an authentication agent. The calling thread is blocked
+ * Registers an authentication agent.
+ *
+ * Note that this should be called by the same effective UID which will be
+ * the real UID using the #PolkitAgentSession API or otherwise calling
+ * polkit_authority_authentication_agent_response().
+ *
+ * The calling thread is blocked
  * until a reply is received. See
  * polkit_authority_register_authentication_agent() for the
  * asynchronous version.
@@ -1178,6 +1173,10 @@ polkit_authority_register_authentication_agent_sync (PolkitAuthority     *author
  * @user_data: The data to pass to @callback.
  *
  * Asynchronously registers an authentication agent.
+ *
+ * Note that this should be called by the same effective UID which will be
+ * the real UID using the #PolkitAgentSession API or otherwise calling
+ * polkit_authority_authentication_agent_response().
  *
  * When the operation is finished, @callback will be invoked in the
  * <link linkend="g-main-context-push-thread-default">thread-default
@@ -1293,7 +1292,13 @@ polkit_authority_register_authentication_agent_with_options_finish (PolkitAuthor
  * @cancellable: (allow-none): A #GCancellable or %NULL.
  * @error: (allow-none): Return location for error or %NULL.
  *
- * Registers an authentication agent. The calling thread is blocked
+ * Registers an authentication agent.
+ *
+ * Note that this should be called by the same effective UID which will be
+ * the real UID using the #PolkitAgentSession API or otherwise calling
+ * polkit_authority_authentication_agent_response().
+ *
+ * The calling thread is blocked
  * until a reply is received. See
  * polkit_authority_register_authentication_agent_with_options() for the
  * asynchronous version.
@@ -1356,19 +1361,15 @@ polkit_authority_unregister_authentication_agent (PolkitAuthority      *authorit
                                                   GAsyncReadyCallback   callback,
                                                   gpointer              user_data)
 {
-  GVariant *subject_value;
-
   g_return_if_fail (POLKIT_IS_AUTHORITY (authority));
   g_return_if_fail (POLKIT_IS_SUBJECT (subject));
   g_return_if_fail (g_variant_is_object_path (object_path));
   g_return_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
 
-  subject_value = polkit_subject_to_gvariant (subject);
-  g_variant_ref_sink (subject_value);
   g_dbus_proxy_call (authority->proxy,
                      "UnregisterAuthenticationAgent",
                      g_variant_new ("(@(sa{sv})s)",
-                                    subject_value,
+                                    polkit_subject_to_gvariant (subject), /* A floating value */
                                     object_path),
                      G_DBUS_CALL_FLAGS_NONE,
                      -1,
@@ -1378,7 +1379,6 @@ polkit_authority_unregister_authentication_agent (PolkitAuthority      *authorit
                                                 callback,
                                                 user_data,
                                                 polkit_authority_unregister_authentication_agent));
-  g_variant_unref (subject_value);
 }
 
 /**
@@ -1492,20 +1492,26 @@ polkit_authority_authentication_agent_response (PolkitAuthority      *authority,
                                                 GAsyncReadyCallback   callback,
                                                 gpointer              user_data)
 {
-  GVariant *identity_value;
+  /* Note that in reality, this API is only accessible to root, and
+   * only called from the setuid helper `polkit-agent-helper-1`.
+   *
+   * However, because this is currently public API, we avoid
+   * triggering warnings from ABI diff type programs by just grabbing
+   * the real uid of the caller here.
+   */
+  uid_t uid = getuid ();
 
   g_return_if_fail (POLKIT_IS_AUTHORITY (authority));
   g_return_if_fail (cookie != NULL);
   g_return_if_fail (POLKIT_IS_IDENTITY (identity));
   g_return_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
 
-  identity_value = polkit_identity_to_gvariant (identity);
-  g_variant_ref_sink (identity_value);
   g_dbus_proxy_call (authority->proxy,
-                     "AuthenticationAgentResponse",
-                     g_variant_new ("(s@(sa{sv}))",
+                     "AuthenticationAgentResponse2",
+                     g_variant_new ("(us@(sa{sv}))",
+                                    (guint32)uid,
                                     cookie,
-                                    identity_value),
+                                    polkit_identity_to_gvariant (identity)), /* A floating value */
                      G_DBUS_CALL_FLAGS_NONE,
                      -1,
                      cancellable,
@@ -1514,7 +1520,6 @@ polkit_authority_authentication_agent_response (PolkitAuthority      *authority,
                                                 callback,
                                                 user_data,
                                                 polkit_authority_authentication_agent_response));
-  g_variant_unref (identity_value);
 }
 
 /**
@@ -1625,18 +1630,14 @@ polkit_authority_enumerate_temporary_authorizations (PolkitAuthority     *author
                                                      GAsyncReadyCallback  callback,
                                                      gpointer             user_data)
 {
-  GVariant *subject_value;
-
   g_return_if_fail (POLKIT_IS_AUTHORITY (authority));
   g_return_if_fail (POLKIT_IS_SUBJECT (subject));
   g_return_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
 
-  subject_value = polkit_subject_to_gvariant (subject);
-  g_variant_ref_sink (subject_value);
   g_dbus_proxy_call (authority->proxy,
                      "EnumerateTemporaryAuthorizations",
                      g_variant_new ("(@(sa{sv}))",
-                                    subject_value),
+                                    polkit_subject_to_gvariant (subject)), /* A floating value */
                      G_DBUS_CALL_FLAGS_NONE,
                      -1,
                      cancellable,
@@ -1645,7 +1646,6 @@ polkit_authority_enumerate_temporary_authorizations (PolkitAuthority     *author
                                                 callback,
                                                 user_data,
                                                 polkit_authority_enumerate_temporary_authorizations));
-  g_variant_unref (subject_value);
 }
 
 /**
@@ -1656,10 +1656,10 @@ polkit_authority_enumerate_temporary_authorizations (PolkitAuthority     *author
  *
  * Finishes retrieving all registered actions.
  *
- * Returns: (transfer full): A list of #PolkitTemporaryAuthorization
- * objects or %NULL if @error is set. The returned list should be
- * freed with g_list_free() after each element have been freed with
- * g_object_unref().
+ * Returns: (element-type Polkit.TemporaryAuthorization) (transfer full): A
+ * list of #PolkitTemporaryAuthorization objects or %NULL if @error is set. The
+ * returned list should be freed with g_list_free() after each element have
+ * been freed with g_object_unref().
  **/
 GList *
 polkit_authority_enumerate_temporary_authorizations_finish (PolkitAuthority *authority,
@@ -1698,11 +1698,13 @@ polkit_authority_enumerate_temporary_authorizations_finish (PolkitAuthority *aut
           g_prefix_error (error, "Error serializing return value of EnumerateTemporaryAuthorizations: ");
           g_list_foreach (ret, (GFunc) g_object_unref, NULL);
           g_list_free (ret);
-          goto out;
+          ret = NULL;
+          goto out_array;
         }
       ret = g_list_prepend (ret, auth);
     }
   ret = g_list_reverse (ret);
+ out_array:
   g_variant_unref (array);
   g_variant_unref (value);
 
@@ -1723,10 +1725,10 @@ polkit_authority_enumerate_temporary_authorizations_finish (PolkitAuthority *aut
  * polkit_authority_enumerate_temporary_authorizations() for the
  * asynchronous version.
  *
- * Returns: (transfer full): A list of #PolkitTemporaryAuthorization
- * objects or %NULL if @error is set. The returned list should be
- * freed with g_list_free() after each element have been freed with
- * g_object_unref().
+ * Returns: (element-type Polkit.TemporaryAuthorization) (transfer full): A
+ * list of #PolkitTemporaryAuthorization objects or %NULL if @error is set. The
+ * returned list should be freed with g_list_free() after each element have
+ * been freed with g_object_unref().
  **/
 GList *
 polkit_authority_enumerate_temporary_authorizations_sync (PolkitAuthority     *authority,
@@ -1777,18 +1779,14 @@ polkit_authority_revoke_temporary_authorizations (PolkitAuthority     *authority
                                                   GAsyncReadyCallback  callback,
                                                   gpointer             user_data)
 {
-  GVariant *subject_value;
-
   g_return_if_fail (POLKIT_IS_AUTHORITY (authority));
   g_return_if_fail (POLKIT_IS_SUBJECT (subject));
   g_return_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
 
-  subject_value = polkit_subject_to_gvariant (subject);
-  g_variant_ref_sink (subject_value);
   g_dbus_proxy_call (authority->proxy,
                      "RevokeTemporaryAuthorizations",
                      g_variant_new ("(@(sa{sv}))",
-                                    subject_value),
+                                    polkit_subject_to_gvariant (subject)), /* A floating value */
                      G_DBUS_CALL_FLAGS_NONE,
                      -1,
                      cancellable,
@@ -1797,7 +1795,6 @@ polkit_authority_revoke_temporary_authorizations (PolkitAuthority     *authority
                                                 callback,
                                                 user_data,
                                                 polkit_authority_revoke_temporary_authorizations));
-  g_variant_unref (subject_value);
 }
 
 /**

@@ -1,3 +1,816 @@
+policykit-1 (122-3) unstable; urgency=medium
+
+  * d/polkitd.postinst: Stop polkitd before changing home directory.
+    usermod will refuse to change the home directory if a polkitd process
+    is running as the polkitd uid, so stop polkitd if necessary, and also
+    don't fail if usermod can't change the home directory in an existing
+    installation (which is non-critical anyway). (Closes: #1030154)
+
+ -- Simon McVittie <smcv@debian.org>  Tue, 31 Jan 2023 22:05:24 +0000
+
+policykit-1 (122-2) unstable; urgency=medium
+
+  [ Debian Janitor ]
+  * d/changelog: Trim trailing whitespace
+  * d/upstream/metadata: Update URLs for Bug-Database, Bug-Submit
+
+  [ Simon McVittie ]
+  * Update how we assign root-equivalent groups
+    - d/p/debian/50-default.rules-Replace-wheel-group-with-sudo-group.patch,
+      d/rules:
+      Set up Debian's default root-equivalent group 'sudo' in
+      50-default.rules rather than in 40-debian-sudo.rules. This ensures
+      that users of polkitd-pkla can override it by configuring admin
+      identities the old way. Previously, because 40-debian-sudo.rules was
+      earlier in the sequence than 49-polkit-pkla-compat.rules, it would
+      take precedence and the admin identities from polkitd-pkla were
+      ignored. (Closes: #1023393)
+      By default, polkitd-pkla does not provide any admin identities,
+      which means we behave as though polkitd-pkla was not installed at all,
+      and fall back to the sudo group defined in 50-default.rules.
+    - d/p/debian/05_revert-admin-identities-unix-group-wheel.patch:
+      Drop patch, superseded by the one described above
+    - d/rules: When built for Ubuntu, also install an Ubuntu-specific file
+      sequenced after 49-polkit-pkla-compat.rules but before
+      50-default.rules, which treats both the 'sudo' group and the legacy
+      'admin' group as root-equivalent.
+  * Replace /etc/pam.d/polkit-1 with /usr/lib/pam.d/polkit-1.
+    /usr/lib/pam.d has been supported since at least 1.4.0 (Debian 11),
+    so we can make this an ordinary packaged file instead of a conffile.
+    Local sysadmin overrides can still be done via /etc/pam.d/polkit-1
+    as before.
+    This sidesteps dpkg's inability to keep track of a conffile when it is
+    moved from one package to another (#399829, #645849, #163657, #595112).
+    (Closes: #1006203)
+  * postinst: Only clean up config directories if not owned.
+    If we only have polkitd installed, then we want to clean up the obsolete
+    directory /etc/polkit-1/localauthority.conf.d on upgrade, but if we
+    have polkitd-pkla installed, then it owns that directory and we should
+    not remove it. (Closes: #1026425)
+  * d/policykit-1.dirs: Continue to own some legacy directory names.
+    Having the transitional package continue to own these directories until
+    it has had a chance to clean up obsolete conffiles will silence warnings
+    from dpkg about inability to remove them. (Closes: #1027420)
+  * d/polkitd.postrm: Clean up /var/lib/polkit-1 on purge.
+    If /var/lib/polkit-1 was the polkitd user's home directory, then it
+    might contain a .cache subdirectory; clean that up too.
+  * Create polkitd user with home directory /nonexistent in new installations.
+    This will prevent it from creating detritus in /var/lib/polkit-1.
+  * polkitd.postinst: Change polkitd home directory to /nonexistent on upgrade
+  * Remove version constraints unnecessary since buster (oldstable)
+  * Update standards version to 4.6.2 (no changes needed)
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 20 Jan 2023 13:22:24 +0000
+
+policykit-1 (122-1) unstable; urgency=medium
+
+  * d/watch: Fix handling of polkit-pkla-compat
+  * d/watch: Monitor Gitlab releases instead of fd.o web server
+  * New upstream release
+  * Drop patches that were included in the new upstream release
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 28 Oct 2022 18:36:30 +0100
+
+policykit-1 (121+compat0.1-6) unstable; urgency=medium
+
+  * d/polkitd.examples: Really install the example rules mentioned in NEWS
+  * d/control: Explicitly build-depend on docbook-xsl.
+    polkit-pkla-compat needs this for the man pages, which cannot currently
+    be disabled, so it is not marked as <!nodoc> (and neither is xsltproc).
+  * Only build API documentation if policykit-1-doc is built.
+    It doesn't need to be built when we're doing an architecture-specific
+    build, and we can also mark it with the <!nodoc> build-profile (although
+    that's not particularly useful in this case because it's the only
+    arch-indep binary package).
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 13 Oct 2022 21:05:11 +0100
+
+policykit-1 (121+compat0.1-5) unstable; urgency=medium
+
+  * Release to unstable (Closes: #946231, #1018897)
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 13 Oct 2022 10:46:03 +0100
+
+policykit-1 (121+compat0.1-4) experimental; urgency=medium
+
+  * d/polkitd.postinst: Consistently indent with spaces
+  * d/polkitd.postinst: Quote defensively
+  * d/polkitd.postinst: Don't explicitly restart the systemd service.
+    dh_installsystemd does this for us anyway.
+  * d/polkitd.postinst: Make sure message bus policy is reloaded if needed.
+    If we created or modified the polkitd user, then we need to refresh
+    dbus-daemon's cached policy to take that user into account, otherwise
+    polkitd will fail to start. This fixes an autopkgtest failure.
+  * d/polkitd.postinst: Stop polkitd when not using systemd.
+    On non-systemd systems, polkitd is a traditional D-Bus service and is
+    not managed by a service manager, so the way to ensure we are running
+    the upgraded version is to stop it and let the D-Bus system bus activate
+    a new copy next time it is used.
+  * Install a sysusers.d(5) fragment to set up the system user.
+    This allows use of polkit without adduser on systems that have either
+    systemd or systemd-standalone-sysusers.
+  * d/polkitd.tmpfiles: Provide a tmpfiles.d(5) fragment for our directories
+  * Add another override for man pages not matching Lintian expectations
+  * d/rules: Build with hardening=+bindnow
+  * Add doc-base metadata for the reference manual
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 10 Oct 2022 15:00:55 +0100
+
+policykit-1 (121+compat0.1-3) experimental; urgency=medium
+
+  * Merge content of polkitd-javascript into polkitd.
+    Keep the polkitd-javascript package as a transitional package.
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 28 Sep 2022 12:19:38 +0100
+
+policykit-1 (121+compat0.1-2) experimental; urgency=medium
+
+  * Add a NEWS file describing the change of security policy format
+  * d/control: policykit-1 Recommends polkitd-pkla.
+    This arranges for upgrades from Debian 11 to install polkitd-pkla by
+    default, preserving previous functionality, while also allowing it to
+    be removed for legacy-free systems.
+  * d/pkla/: Remove, no longer installed or used
+  * d/example-rules: Add some examples of the JavaScript rules format
+  * d/changelog: Merge changelog entries from testing/unstable, in
+    preparation for uploading this branch to unstable
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 14 Sep 2022 21:33:22 +0100
+
+policykit-1 (121+compat0.1-1) experimental; urgency=medium
+
+  * Restructure the package to use upstream project polkit-pkla-compat
+    for compatibility with 0.105 and older versions.
+    - polkitd-javascript is now the only implementation of polkitd.
+      The packages will probably be merged in a future upload, but keep
+      them separate for now as a contingency plan.
+    - polkitd-pkla now Depends on polkitd-javascript instead of having
+      Breaks/Replaces on it. It's now an addon for polkitd-javascript,
+      which calls out to an external helper program to check authorization
+      against the old pklocalauthority(8) configuration files.
+    - polkitd-javascript: Ensure that the polkitd user has a primary group.
+      The polkit-pkla-compat package wants its directories to be owned by
+      root:polkitd, which will only work if the polkitd user has a
+      corresponding polkitd group.
+    - Add polkit-pkla-compat as a secondary upstream tarball
+    - Build polkit-pkla-compat instead of a PKLA build of polkitd
+    - Drop patches that reinstated the ability to do a PKLA build of polkitd
+  * d/p/polkitbackendduktapeauthority.c-Print-the-error-string-we.patch:
+    Add patch from upstream to display error string as intended
+  * d/control: Explicitly build-depend on xml-core, for its dh addon
+  * d/copyright: Update
+  * Update Lintian overrides
+  * Standards-Version: 4.6.1 (no changes required)
+  * d/tests: Skip if dbus-daemon is not running and cannot be started
+  * Try harder to clean up obsolete conffiles
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 01 Sep 2022 15:59:38 +0100
+
+policykit-1 (121-2) experimental; urgency=medium
+
+  [ Michael Biebl ]
+  * Use dh-sequence-gir Build-Depends to enable the gir addon
+  * Remove no longer needed dh option.
+    Upstream has removed the autotools based build system so we no longer
+    need to tell dh which build system to use.
+  * Remove workaround for missing mocklibc
+
+  [ Simon McVittie ]
+  * d/copyright: Reinstate entry for test/mocklibc
+  * d/polkitd.install: Really install the XML catalog entry
+  * d/rules: Enable xml-core dh sequence
+  * d/catalog.xml: Fix basename of DTD
+
+ -- Simon McVittie <smcv@debian.org>  Sat, 23 Jul 2022 16:04:32 +0100
+
+policykit-1 (121-1) experimental; urgency=medium
+
+  * New upstream release
+  * d/copyright: Update
+  * Drop patches that were applied upstream
+  * Refresh remaining patches
+  * d/control: Build-depend on duktape instead of mozjs
+  * Install policyconfig-1.dtd in polkitd package, with an XML catalog
+    entry (Closes: #872615)
+  * d/watch: Use Gitlab tags to watch for new releases for now.
+    Subsequent releases will be done via the Gitlab releases feature, but
+    it's not immediately obvious what form that will take.
+  * Add patch from upstream to install rules.d defaults in /usr/share.
+    This brings us one step closer to the "empty /etc is valid" model.
+  * d/rules: Install sudo and Ubuntu admin rules into /usr/share, too.
+    This avoids these files having to be conffiles that vary between
+    distros.
+  * d/upstream/metadata: Add
+  * d/polkitd.docs: Update
+
+ -- Simon McVittie <smcv@debian.org>  Sat, 16 Jul 2022 20:17:46 +0100
+
+policykit-1 (0.120-6) experimental; urgency=medium
+
+  * Add patch from Fedora to fix denial of service via fd exhaustion
+    (CVE-2021-4115; Closes: #1005784)
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 18 Feb 2022 10:04:56 +0000
+
+policykit-1 (0.120-5) experimental; urgency=medium
+
+  * d/*.postinst: Correct package names in initial comments
+  * d/policykit-1.bug-control: Correct name of Submit-As field
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 09 Feb 2022 11:42:38 +0000
+
+policykit-1 (0.120-4) experimental; urgency=medium
+
+  * d/control: Change descriptions to refer to polkit.
+    According to NEWS, the official name of the project has been polkit
+    since 2012, and perhaps earlier.
+  * d/patches: Use upstream's finalized patch for CVE-2021-4034.
+    The patch that was provided to distributors under embargo was not the
+    final version: it used a different exit status, and made an attempt to
+    show help. The version that was actually committed after the embargo
+    period ended interprets argc == 0 as an attack rather than a mistake,
+    and does not attempt to show the help message.
+  * d/patches: Move Debian-specific patches to d/p/debian/.
+    This makes it clearer that these are not intended to go upstream.
+  * Split policykit-1 into polkitd and pkexec packages.
+    pkexec is a setuid program, which makes it a higher security risk than
+    the more typical IPC-based uses of polkit. If we separate out pkexec
+    into its own package, then only packages that rely on being able to run
+    pkexec will have to depend on it, reducing attack surface for users
+    who are able to remove the pkexec package.
+  * Reinstate the .pkla backend as a separate binary package.
+    Upstream polkit switched its authorization rule syntax from .ini-style
+    .pkla files to JavaScript in version 0.106. Debian has historically used
+    a fork of the last .pkla-based version, but this was becoming
+    unsustainable: bug fixes from subsequent upstream versions were either
+    applied as patches, or missing from the Debian package.
+    The "local authority" code that implements .pkla files is not actually
+    all that large, so patching it into a modern upstream version is a
+    much smaller task than patching modern upstream bug fixes into an old
+    upstream version.
+    For this upload to experimental, keep both the JavaScript backend and the
+    .pkla backend intact, by compiling polkitd twice with different options.
+    This lets us preserve existing functionality of upstream and experimental
+    polkit (with the more powerful JavaScript-based rules, which can base
+    their authorization decisions on service-specific information like the
+    name of a systemd unit), while also having the opportunity to evaluate
+    polkitd-pkla as a more direct replacement for what's in bookworm.
+  * Adjust Lintian override syntax
+  * Add Debian-specific man pages for polkitd-pkla
+  * d/copyright: Update
+  * Always configure the sudo group as root-equivalent.
+    This avoids Debian derivatives getting an unexpected change in behaviour
+    when they switch from inheriting Debian's policykit-1 package to
+    building their own policykit-1 package, perhaps as a result of wanting
+    to apply an unrelated patch.
+    The sudo group is defined to be root-equivalent in base-passwd, so this
+    should be equally true for all Debian derivatives.
+    (Closes: utopia-team/polkit!3; thanks to Arnaud Rebillout)
+
+ -- Simon McVittie <smcv@debian.org>  Sat, 05 Feb 2022 10:49:54 +0000
+
+policykit-1 (0.120-3) experimental; urgency=high
+
+  * d/p/Avoid-local-privilege-escalation-in-polkit-s-pkexec.patch:
+    Apply embargoed patch for local privilege escalation (CVE-2021-4034)
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 24 Jan 2022 14:09:42 +0000
+
+policykit-1 (0.120-2) experimental; urgency=medium
+
+  * d/rules: Extend timeout for unit tests.
+    Meson's default 30 second timeout is uncomfortably short even on x86,
+    and too short on e.g. mips.
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 28 Oct 2021 12:52:02 +0100
+
+policykit-1 (0.120-1) experimental; urgency=medium
+
+  * New upstream release
+  * Drop patches that were applied upstream
+  * Depend on default-dbus-system-bus | dbus-system-bus instead of dbus.
+    We need the system bus: let's be specific about that. This will allow
+    dbus-broker to be substituted for dbus, if desired.
+  * Build-depend on dbus-daemon instead of dbus.
+    We only need dbus-run-session at build time; we don't need a
+    fully-working system bus.
+  * debian/missing/docs: Remove extra copy of documentation.
+    This is in the new upstream release.
+    - d/source/include-binaries: Remove, no longer needed
+  * d/p/Don-t-pass-positional-parameters-to-i18n.merge_file.patch:
+    Add patch to fix FTBFS with Meson 0.60.0
+  * Standards-Version: 4.6.0 (no changes required)
+  * Use d/watch format version 4
+
+ -- Simon McVittie <smcv@debian.org>  Tue, 26 Oct 2021 12:11:24 +0100
+
+policykit-1 (0.119-1) experimental; urgency=medium
+
+  * New upstream release
+    - Fixes local privilege escalation involving
+      polkit_system_bus_name_get_creds_sync() (CVE-2021-3560)
+      (Closes: #989429)
+  * d/missing, d/rules: Work around missing docs/polkit/overview.xml etc.
+    in 0.119 tarball
+  * Build using Meson
+  * d/p/build-Remove-redundant-computation-of-dbus-data-directory.patch,
+    d/p/build-Don-t-require-dbus-development-files.patch,
+    d/p/meson_post_install-Use-geteuid-instead-of-getpass.patch,
+    d/p/meson_post_install-Don-t-fail-if-the-polkitd-user-doesn-t.patch,
+    d/p/meson_post_install-If-installation-steps-are-skipped-say-.patch,
+    d/p/meson_post_install-Don-t-install-pkexec-group-writable.patch,
+    d/p/meson_post_install-Don-t-make-programs-setuid-if-we-are-n.patch,
+    d/p/meson_post_install-Respect-DESTDIR-for-absolute-paths.patch,
+    d/p/build-Make-the-directory-for-helper-executables-consisten.patch:
+    Add some patches to improve the Meson build system
+  * d/missing, d/rules: Get mocklibc into the right layout for the build
+  * Stop providing static libraries.
+    The Meson build infrastructure only supports shared libraries, and the
+    static libraries built by Autotools were already not particularly
+    useful, because they indirectly depend on the libmount shared library.
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 04 Jun 2021 19:49:26 +0100
+
+policykit-1 (0.118-2) experimental; urgency=medium
+
+  [ Helmut Grohne ]
+  * Annotate Build-Depends: dbus <!nocheck> (Closes: #980998)
+
+  [ Michael Biebl ]
+  * Remove old maintscript migration code from pre-oldstable
+  * Use --restart-after-upgrade.
+    With debhelper 13.1, --no-start will disable --restart-after-upgrade.
+    Since we want the service to be restarted on upgrades, request that
+    explicitly.
+    See #959678
+
+  [ Simon McVittie ]
+  * d/rules: Remove --libexecdir override.
+    This has no practical effect: the upstream build system no longer uses
+    the libexec directory.
+  * d/rules: Remove redundant dh_missing --fail-missing override.
+    This is the default in dh compat level 13.
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 16 Apr 2021 11:34:06 +0100
+
+policykit-1 (0.118-1) experimental; urgency=medium
+
+  * New upstream release
+    - Drop patch that was applied upstream
+  * d/control: Update build-dependency to mozjs78
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 27 Sep 2020 21:06:09 +0100
+
+policykit-1 (0.117-1) experimental; urgency=medium
+
+  * New upstream release
+  * Rebase patches
+  * Bump Standards-Version to 4.5.0
+  * Add polkitbackendjsauthoritytest-wrapper.py to release tarball
+  * Add python3-dbusmock to Build-Depends and mark it <!nocheck>.
+    Required by test/polkitbackend/polkitbackendjsauthoritytest-wrapper.py
+  * Bump debhelper-compat to 13
+  * Add symlink for polkit-agent-helper-1 after the move to /usr/libexec.
+    Support upgrades from 0.105-27 (and later versions in unstable), which
+    moved the private binaries from /usr/lib/policykit-1 to /usr/libexec.
+    (Closes: #965210)
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 03 Aug 2020 15:42:56 +0200
+
+policykit-1 (0.116-3) experimental; urgency=medium
+
+  * Team upload.
+  * Port to mozjs-68 (Closes: #961279)
+
+ -- Laurent Bigonville <bigon@debian.org>  Wed, 22 Jul 2020 11:59:43 +0200
+
+policykit-1 (0.116-2) experimental; urgency=medium
+
+  [ Mark Hindley ]
+  * Depend on new virtual packages default-logind and logind
+    (Closes: #923240)
+
+  [ Simon McVittie ]
+  * d/*.symbols: Add Build-Depends-Package metadata
+  * d/policykit-1.lintian-overrides: Override systemd unit false positives.
+    The systemd unit is only for on-demand D-Bus activation, and is not
+    intended to be started during boot, so an [Install] section and a
+    parallel LSB init script are not necessary.
+  * d/policykit-1.bug-control: Add systemd, elogind versions to bug reports.
+    reportbug doesn't currently seem to interpret
+    "Depends: default-logind | logind" as implying that it should include
+    the version number of the package that Provides logind in bug reports.
+    Workaround for #934472.
+  * Standards-Version: 4.4.0 (no changes required)
+  * Switch to debhelper-compat 12
+
+ -- Simon McVittie <smcv@debian.org>  Sun, 11 Aug 2019 18:56:22 +0100
+
+policykit-1 (0.116-1) experimental; urgency=medium
+
+  * New upstream release
+    - Document polkit_subject_equal() as unsuitable for security decisions
+      (CVE-2019-6133)
+    - Allow process uid to be unset again, fixing a regression in the
+      solution for #915332
+    - Port the JS authority to mozjs-60 (Closes: #917309)
+    - Fix some resource leaks
+    - Documentation and debug message fixes
+  * Drop patch for #915332, applied upstream
+  * Standards-Version: 4.3.0 (no changes required)
+  * Set experimental branch in Vcs-Git
+  * Change the policykit-1 package from Architecture: any to
+    Architecture: linux-any, and remove the consolekit [!linux-any]
+    dependency. polkit no longer has any backends for non-Linux.
+    (Closes: #918446)
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 01 May 2019 08:24:29 +0100
+
+policykit-1 (0.115-3) experimental; urgency=medium
+
+  * Allow negative uids/gids in PolkitUnixUser and Group objects.
+    Fixes a vulnerability in PolicyKit that allows a user with a uid greater
+    than INT_MAX to successfully execute arbitrary polkit actions.
+    (CVE-2018-19788, Closes: #915332)
+
+ -- Michael Biebl <biebl@debian.org>  Fri, 07 Dec 2018 20:17:15 +0100
+
+policykit-1 (0.115-2) experimental; urgency=medium
+
+  [ Simon McVittie ]
+  * d/gbp.conf: Set patch-numbers to false to match current practice
+
+  [ Michael Biebl ]
+  * Switch to dh_missing and abort on uninstalled files
+  * Move D-Bus policy file to /usr/share/dbus-1/system.d/
+    To better support stateless systems with an empty /etc, the old location
+    in /etc/dbus-1/system.d/ should only be used for local admin changes.
+    Package provided D-Bus policy files are supposed to be installed in
+    /usr/share/dbus-1/system.d/.
+    This is supported since dbus 1.9.18.
+  * Remove obsolete conffile
+    /etc/dbus-1/system.d/org.freedesktop.PolicyKit1.conf on upgrades
+  * Bump Standards-Version to 4.2.1
+  * Remove Breaks for versions older than oldstable
+  * Stop masking polkit.service during the upgrade process.
+    This is no longer necessary with the D-Bus policy file being installed
+    in /usr/share/dbus-1/system.d/. (Closes: #902474)
+  * Use dh_installsystemd to restart polkit.service after an upgrade.
+    This replaces a good deal of hand-written maintscript code.
+  * Remove upgrade code which changes the home directory of the polkitd user
+
+ -- Michael Biebl <biebl@debian.org>  Tue, 27 Nov 2018 21:53:12 +0100
+
+policykit-1 (0.115-1) experimental; urgency=medium
+
+  * New upstream version 0.115
+    - Fixes CVE-2018-1116 (Closes: #903563)
+    - d/p/jsauthority-pass-s-format-string-to-remaining-report.patch:
+      Drop, applied upstream
+  * d/watch: Use https
+  * d/watch: Download upstream PGP signatures
+  * debian/upstream/signing-key.asc: Add public keys for Ray Strode,
+    Miloslav Trmac, David Zeuthen
+  * d/gbp.conf: Merge upstream tags into the upstream branch
+  * Add myself to Uploaders
+  * d/libpolkit-gobject-1-0.symbols: Update for new semi-private ABI
+  * d/rules: Skip build-time tests if DEB_BUILD_OPTIONS=nocheck
+  * Standards-Version: 4.1.5 (no changes required)
+  * Set Rules-Requires-Root to no
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 11 Jul 2018 12:24:20 +0100
+
+policykit-1 (0.114-1) experimental; urgency=medium
+
+  [ Michael Biebl ]
+  * New upstream version 0.114
+  * Rebase patches
+  * Switch to mozjs 52 (Closes: #863784)
+  * Drop -Wl,--no-as-needed, no longer necessary
+  * jsauthority: pass "%s" format string to remaining report function
+  * Add Provides to gir1.2-polkit-1.0 to reflect its contents
+
+  [ Martin Pitt ]
+  * debian/copyright: Use https URL for Format:
+  * Update Vcs-* links for move to salsa.debian.org.
+  * Move to debhelper compat level 10.
+    Remove explicit dh-autoreconf, it's now done by default.
+  * Bump Standards-Version to 4.1.3
+  * Add autopkgtest.
+    This covers the pkaction and pkcheck CLI tools.
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 09 Apr 2018 22:31:58 +0200
+
+policykit-1 (0.113-6) experimental; urgency=medium
+
+  * master/Add-gettext-support-for-.policy-files.patch: Backport from master:
+    Add .loc and .its files so that gettext can be used to translate policy
+    files. Some upstreams, particularly those that are switching to meson,
+    expect these files to be present so that their PK policy files can be
+    translated. (Closes: #863207)
+
+ -- Iain Lane <laney@debian.org>  Wed, 24 May 2017 16:11:01 +0100
+
+policykit-1 (0.113-5) experimental; urgency=medium
+
+  [ Simon McVittie ]
+  * Build-depend on intltool instead of relying on gtk-doc-tools'
+    dependency (Closes: #837846)
+
+  [ Michael Biebl ]
+  * Use https:// for the upstream homepage.
+  * Update Vcs-Browser to use cgit.
+  * Drop the polkitd.service Alias. The version in unstable, based on 0.105,
+    now also uses the name polkit.service for the systemd service unit.
+
+  [ Martin Pitt ]
+  * Use PAM's common-session-noninteractive modules for pkexec instead of
+    common-session. The latter also runs pam_systemd (the only difference
+    normally) which is a no-op under the classic session-centric
+    D-BUS/graphical login model (as it won't start a new one if it is already
+    running within a logind session), but very expensive when using
+    dbus-user-session and being called from a service that runs outside the
+    PAM session. This causes long delays in e. g. gnome-settings-daemon's
+    backlight helpers. (LP: #1626651)
+
+ -- Michael Biebl <biebl@debian.org>  Fri, 21 Oct 2016 16:28:30 +0200
+
+policykit-1 (0.113-4) experimental; urgency=medium
+
+  [ Simon McVittie ]
+  * Run tests with a session bus pretending to be the system bus,
+    so they can pass in a buildd environment
+
+  [ Michael Biebl ]
+  * Create our custom rules files in debian/tmp so we don't FTBFS for
+    binary-indep builds and run dh_install after that.
+  * Run wrap-and-sort -ast.
+  * Bump Standards-Version to 3.9.8.
+
+ -- Michael Biebl <biebl@debian.org>  Sat, 16 Apr 2016 14:46:18 +0200
+
+policykit-1 (0.113-3) experimental; urgency=medium
+
+  * Generate tight inter-package dependencies.
+    This ensures that everything from the same source package is upgraded in
+    lockstep. (Closes: #817998)
+  * Drop obsolete Breaks from pre-wheezy.
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 14 Apr 2016 14:15:09 +0200
+
+policykit-1 (0.113-2) experimental; urgency=medium
+
+  [ Simon McVittie ]
+  * policykit-1.links: statically alias polkit.service (upstream's name)
+    as polkitd.service (Debian's historical name)
+
+  [ Martin Pitt ]
+  * debian/policykit-1.{pre,post}inst: Temporarily mask polkit.service while
+    policykit-1 is unpackaged but not yet configured. During that time we
+    don't yet have our D-Bus policy in /etc so that polkitd cannot work yet.
+    This can be dropped once the D-Bus policy moves to /usr.
+    (Closes: #794723, LP: #1447654)
+
+ -- Martin Pitt <mpitt@debian.org>  Wed, 21 Oct 2015 08:28:11 +0200
+
+policykit-1 (0.113-1) experimental; urgency=medium
+
+  * Team upload.
+
+  [ Martin Pitt ]
+  * policykit-1.postinst: Don't kill polkitd under systemd, but properly
+    restart it. This avoids killing it shortly after systemd tries to
+    bus-activate it on installation. (LP: #1447654)
+
+  [ Simon McVittie ]
+  * Disable silent build rules. (Previously done in Ubuntu, although
+    it seems to have been lost in a merge somewhere.)
+  * New upstream release
+    - drop most patches: they either came from upstream, or have been
+      merged upstream
+    - add new function to symbols file
+    - fixes CVE-2015-4625, CVE-2015-3218, CVE-2015-3255, CVE-2015-3256
+  * Annotate remaining patches with a bit more information. They are:
+    - 01_pam_polkit.patch: use Debian's common-* infrastructure,
+      plus pam_env to get the global environment and locale.
+      Debian-specific.
+    - 02_gettext.patch: Use gettext to translate .policy files at
+      runtime, allowing for Ubuntu-style language packs.
+      Debian-specific (mainly for Ubuntu's benefit, really).
+    - 05_revert-admin-identities-unix-group-wheel.patch: Debian does
+      not use the "wheel" group like Red Hat derivatives do;
+      treat uid 0 as the administrative identity instead.
+      Debian-specific.
+    - 08_chdir_root.patch: Explicitly use chdir("/") instead of
+      relying on user's home in `getent passwd` being set properly.
+      Potentially upstreamable?
+  * policykit-1.postinst: restart polkit.service, not polkitd.service
+    (which doesn't exist)
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 03 Jul 2015 13:33:59 +0100
+
+policykit-1 (0.112-5) experimental; urgency=medium
+
+  * Team upload.
+  * Go back to mozjs 1.8.5, like the version in unstable: mozjs 17 has
+    been removed from Debian, and mozjs 24 requires significant upstream
+    changes and no longer has a C API (Closes: #776744)
+  * Add a symlink so the old library can run the new agent helper
+    (Closes: #699447)
+  * Add patch from upstream to work around older versions of libpam-systemd
+    which would give root processes the real uid's XDG_RUNTIME_DIR
+    under su; it shouldn't be necessary any more, but is harmless
+    (Closes: #772125)
+  * Replace 03_complete_session.patch with a change from upstream
+    which seems like a more correct solution for LP#445303, LP#649939
+  * Add patches from upstream to treat background processes as part of
+    the same uid's active GUI session if any, fixing use of
+    dbus-user-session (Closes: #779988)
+  * Add patches from upstream to fix some memory leaks (Closes: #775158,
+    LP: #1417637)
+  * Add patch from upstream to fix redundant removal of an event source
+  * Add patch to use libsystemd instead of the libsystemd-login compat
+    library (Closes: #779756)
+
+ -- Simon McVittie <smcv@debian.org>  Tue, 31 Mar 2015 18:13:28 +0100
+
+policykit-1 (0.112-4) experimental; urgency=medium
+
+  [ Andreas Henriksson ]
+  * Install typelib files into MA libdir.
+
+  [ Martin Pitt ]
+  * Rebuild against libsystemd0. This drops the last remaining dependency to
+    libsystemd-login0. (Closes: #771281)
+  * Bump Standards-Version to 3.9.6 (no changes necessary).
+
+ -- Martin Pitt <mpitt@debian.org>  Fri, 28 Nov 2014 10:15:06 +0100
+
+policykit-1 (0.112-3) experimental; urgency=medium
+
+  * Team upload.
+  * debian/rules: Really enable logind support on linux architectures only
+  * debian/control: Use canonical VCS-* URL's
+  * debian/control: Bump Standards-Version to 3.9.5 (no further changes)
+  * debian/control: Depends against libpam-systemd instead of just systemd
+  * debian/control: Add a Breaks against gdm3 (<< 3.8.4-7~) to ensure it
+    registers a logind session properly (Closes: #745983)
+  * debian/policykit-1.postinst: Explicitly set a home directory for the
+    polkitd user (Closes: #748981)
+
+ -- Laurent Bigonville <bigon@debian.org>  Sun, 07 Sep 2014 14:22:54 +0200
+
+policykit-1 (0.112-2) experimental; urgency=low
+
+  * Use logind on linux and consolekit on non-linux
+  * Update to mozjs17
+
+ -- Sjoerd Simons <sjoerd@debian.org>  Fri, 01 Nov 2013 21:36:55 +0100
+
+policykit-1 (0.112-1) experimental; urgency=low
+
+  * New upstream release.
+    - Fixes CVE-2013-4288, unix-process subject for authorization is racy.
+      (Closes: #723717)
+  * Remove 00git_pkexec_pam_env.patch and 09_link_libmozjs.patch, both merged
+    upstream.
+  * Drop explicit Build-Depends on gir1.2-glib-2.0.
+  * Bump Standards-Version to 3.9.4. No further changes.
+
+ -- Michael Biebl <biebl@debian.org>  Thu, 19 Sep 2013 17:39:54 +0200
+
+policykit-1 (0.110-3) experimental; urgency=low
+
+  [ Martin Pitt ]
+  * Add 00git_pkexec_pam_env.patch: pkexec: Set process environment from
+    pam_getenvlist(). Backported from upstream git head.
+  * 01_pam_polkit.patch: Adjust patch to invoke pam_env, so
+    our global settings from /etc/default/locale are applied correctly.
+    Thanks Steve Langasek!
+
+  [ Michael Biebl ]
+  * Use gir addon instead of calling dh_girepository manually.
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 03 Jun 2013 05:54:32 +0200
+
+policykit-1 (0.110-2) experimental; urgency=low
+
+  * When cleaning up /etc/polkit-1/nullbackend.conf.d/ and
+    /etc/polkit-1/localauthority.conf.d/ don't fail if those directories have
+    already been removed. (Closes: #698085)
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 14 Jan 2013 06:01:36 +0100
+
+policykit-1 (0.110-1) experimental; urgency=low
+
+  * New upstream release.
+  * Drop patches which have been merged upstream.
+  * Drop debian/clean, no longer necessary.
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 09 Jan 2013 21:40:35 +0100
+
+policykit-1 (0.109-1) experimental; urgency=low
+
+  * New upstream release. (Closes: #689473)
+  * Update Build-Depends:
+    - Bump libglib2.0-dev to (>= 2.30.0).
+    - Add libmozjs185-dev for the JS rules support.
+  * Remove polkitbackend library.
+  * Use systemd service file provided by upstream.
+  * Reload systemd as the name of the .service file has changed.
+  * Update policykit-1.install:
+    - Private binaries have been moved to /usr/lib/polkit-1.
+    - The extension system has been removed.
+    - The .pkla files are gone and so is /var/lib/polkit-1.
+  * Remove obsolete conffiles and the corresponding (empty) directories on
+    upgrades.
+  * Convert the old localauthority conf files to the new JavaScript based
+    rules file format and make sure it is executed before 50-default.rules.
+  * Refresh patches to apply without fuzz.
+  * The polkitd daemon now runs as unprivileged polkitd user instead of root.
+    Create this system user in postinst and change the directory permissions
+    accordingly so the daemon has access to the rules files.
+  * debian/patches/08_chdir_root.patch: Explicitly use chdir("/") instead of
+    relying on $HOME being set properly.
+  * Since /etc/polkit-1/rules.d/50-default.rules is a proper conffile, remove
+    the comment from upstream that changes to that file are not preserved on
+    upgrades. (Closes: #580634)
+  * debian/patches/09_link_libmozjs.patch: Explicitly link against libmozjs,
+    even if that library is dlopenend as we want to have a proper shlibs
+    dependency.
+  * Use --no-as-needed flag to ensure the linker doesn't remove the libmozjs
+    dependency.
+  * Use dh-autoreconf to update the build system.
+  * Update the Homepage: field.
+
+ -- Michael Biebl <biebl@debian.org>  Mon, 07 Jan 2013 23:59:52 +0100
+
+policykit-1 (0.105-33) unstable; urgency=medium
+
+  * d/p/0.121/CVE-2021-4115-GHSL-2021-077-fix.patch:
+    Attribute CVE-2021-4115 patch to its author.
+    Move it into debian/patches/0.121 to indicate that it is a backport from
+    upstream git, expected to be included in 0.121.
+  * d/p/Fix-a-crash-when-authorization-is-implied.patch:
+    Add patch to fix a crash when one authorization implies another
+
+ -- Simon McVittie <smcv@debian.org>  Sat, 26 Feb 2022 11:11:57 +0000
+
+policykit-1 (0.105-32) unstable; urgency=medium
+
+  * Use upstream patch for CVE-2021-3560.
+    This patch was included in 0.119, so move it into the 0.119/ directory
+    in the patch series.
+  * d/patches: Use upstream's finalized patch for CVE-2021-4034.
+    The patch that was provided to distributors under embargo was not the
+    final version: it used a different exit status, and made an attempt to
+    show help. The version that was actually committed after the embargo
+    period ended interprets argc == 0 as an attack rather than a mistake,
+    and does not attempt to show the help message.
+  * Move some Debian-specific patches into d/p/debian/.
+    This makes it more obvious that they are not intended to go upstream.
+  * d/control: Split the package.
+    pkexec is a setuid program, which makes it a higher security risk than
+    the more typical IPC-based uses of polkit. If we separate out pkexec
+    into its own package, then only packages that rely on being able to run
+    pkexec will have to depend on it, reducing attack surface for users
+    who are able to remove the pkexec package.
+  * d/control: policykit-1 Provides polkitd-pkla.
+    This will give us a migration path to the separate per-backend packages
+    currently available in experimental.
+  * Add patch from Fedora to fix denial of service via fd exhaustion.
+    CVE-2021-4115 (Closes: #1005784)
+  * Standards-Version: 4.6.0 (no changes required)
+  * Build-depend on dbus-daemon instead of dbus.
+    We only need dbus-run-session at build time; we don't need a
+    fully-working system bus.
+  * Use d/watch format version 4
+  * d/rules: Create localauthority configuration with install(1), not
+    echo(1). This aligns the packaging a bit more closely with experimental.
+  * Always configure the sudo group as root-equivalent.
+    This avoids Debian derivatives getting an unexpected change in behaviour
+    when they switch from inheriting Debian's policykit-1 package to
+    building their own policykit-1 package, perhaps as a result of wanting
+    to apply an unrelated patch.
+    The sudo group is defined to be root-equivalent in base-passwd, so this
+    should be equally true for all Debian derivatives.
+    Thanks to Arnaud Rebillout.
+  * d/polkitd.links: Create more polkit-agent-helper-1 symlinks.
+    This executable has moved several times, and its path gets compiled
+    into the libpolkit-agent-1-0 shared library. Making the executable
+    available in all the locations it has previously had is helpful when
+    swapping between versions during testing.
+  * Acknowledge CVE-2021-4034 NMU. Thanks to Salvatore Bonaccorso.
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 18 Feb 2022 12:45:14 +0000
+
+policykit-1 (0.105-31.1) unstable; urgency=high
+
+  * Non-maintainer upload.
+  * Local Privilege Escalation in polkit's pkexec (CVE-2021-4034)
+
+ -- Salvatore Bonaccorso <carnil@debian.org>  Thu, 13 Jan 2022 06:34:44 +0100
+
 policykit-1 (0.105-31) unstable; urgency=medium
 
   [ Salvatore Bonaccorso ]
@@ -864,7 +1677,7 @@ policykit (0.9-2) unstable; urgency=high
 
 policykit (0.9-1) unstable; urgency=low
 
-  * New upstream release. 
+  * New upstream release.
   * debian/control
     - Bump Standards-Version to 3.8.0. No further changes.
 
@@ -872,7 +1685,7 @@ policykit (0.9-1) unstable; urgency=low
 
 policykit (0.8-2) unstable; urgency=low
 
-  * Add symbols files for libpolkit2, libpolkit-grant2 and libpolkit-dbus2. 
+  * Add symbols files for libpolkit2, libpolkit-grant2 and libpolkit-dbus2.
   * debian/policykit.postinst
     - Set correct permissions for all files. (Closes: #482064)
     - Define a small helper function to apply the permissions. This makes it
@@ -927,7 +1740,7 @@ policykit (0.6-1) experimental; urgency=low
   * New upstream release.
   * debian/control
     - Use new "Homepage:" field to specify the upstream URL.
-    - The Vcs-* fields are now officially supported, so remove the XS- prefix.  
+    - The Vcs-* fields are now officially supported, so remove the XS- prefix.
     - Add a Recommends: policykit-gnome to the policykit package.
     - Enable SELinux support by adding a Build-Depends on libselinux1-dev for
       all supported platforms.
@@ -941,4 +1754,3 @@ policykit (0.5-1) experimental; urgency=low
   * Initial release. (Closes: #397087)
 
  -- Michael Biebl <biebl@debian.org>  Tue, 02 Oct 2007 22:38:04 +0200
-

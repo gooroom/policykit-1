@@ -50,9 +50,9 @@ base_init (gpointer g_iface)
 GType
 polkit_subject_get_type (void)
 {
-  static GType iface_type = 0;
+  static volatile gsize g_define_type_id__volatile = 0;
 
-  if (iface_type == 0)
+  if (g_once_init_enter (&g_define_type_id__volatile))
     {
       static const GTypeInfo info =
       {
@@ -68,12 +68,14 @@ polkit_subject_get_type (void)
         NULL                    /* value_table    */
       };
 
-      iface_type = g_type_register_static (G_TYPE_INTERFACE, "PolkitSubject", &info, 0);
+      GType iface_type =
+        g_type_register_static (G_TYPE_INTERFACE, "PolkitSubject", &info, 0);
 
       g_type_interface_add_prerequisite (iface_type, G_TYPE_OBJECT);
+      g_once_init_leave (&g_define_type_id__volatile, iface_type);
     }
 
-  return iface_type;
+  return g_define_type_id__volatile;
 }
 
 /**
@@ -97,6 +99,8 @@ polkit_subject_hash (PolkitSubject *subject)
  * @b: A #PolkitSubject.
  *
  * Checks if @a and @b are equal, ie. represent the same subject.
+ * However, avoid calling polkit_subject_equal() to compare two processes;
+ * for more information see the `PolkitUnixProcess` documentation.
  *
  * This function can be used in e.g. g_hash_table_new().
  *
@@ -245,11 +249,15 @@ polkit_subject_from_string  (const gchar   *str,
         }
       else if (sscanf (str, "unix-process:%d:%" G_GUINT64_FORMAT, &scanned_pid, &scanned_starttime) == 2)
         {
+	  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
           subject = polkit_unix_process_new_full (scanned_pid, scanned_starttime);
+	  G_GNUC_END_IGNORE_DEPRECATIONS
         }
       else if (sscanf (str, "unix-process:%d", &scanned_pid) == 1)
         {
+	  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
           subject = polkit_unix_process_new (scanned_pid);
+	  G_GNUC_END_IGNORE_DEPRECATIONS
           if (polkit_unix_process_get_start_time (POLKIT_UNIX_PROCESS (subject)) == 0)
             {
               g_object_unref (subject);
@@ -284,12 +292,12 @@ polkit_subject_from_string  (const gchar   *str,
   return subject;
 }
 
+/* Note that this returns a floating value. */
 GVariant *
 polkit_subject_to_gvariant (PolkitSubject *subject)
 {
   GVariantBuilder builder;
   GVariant *dict;
-  GVariant *ret;
   const gchar *kind;
 
   kind = "";
@@ -323,8 +331,7 @@ polkit_subject_to_gvariant (PolkitSubject *subject)
     }
 
   dict = g_variant_builder_end (&builder);
-  ret = g_variant_new ("(s@a{sv})", kind, dict);
-  return ret;
+  return g_variant_new ("(s@a{sv})", kind, dict);
 }
 
 static GVariant *
@@ -357,6 +364,7 @@ lookup_asv (GVariant            *dict,
                            g_variant_get_type_string (value),
                            type_string);
               g_free (type_string);
+              g_variant_unref (value);
               goto out;
             }
           ret = value;
@@ -422,7 +430,7 @@ polkit_subject_new_for_gvariant (GVariant  *variant,
       start_time = g_variant_get_uint64 (v);
       g_variant_unref (v);
 
-      v = lookup_asv (details_gvariant, "uid", G_VARIANT_TYPE_INT32, error);
+      v = lookup_asv (details_gvariant, "uid", G_VARIANT_TYPE_INT32, NULL);
       if (v != NULL)
         {
           uid = g_variant_get_int32 (v);

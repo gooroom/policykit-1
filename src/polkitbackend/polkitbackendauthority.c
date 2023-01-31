@@ -30,7 +30,7 @@
 #include <polkit/polkitprivate.h>
 
 #include "polkitbackendauthority.h"
-#include "polkitbackendlocalauthority.h"
+#include "polkitbackendjsauthority.h"
 
 #include "polkitbackendprivate.h"
 
@@ -39,7 +39,7 @@
  * @title: PolkitBackendAuthority
  * @short_description: Abstract base class for authority backends
  * @stability: Unstable
- * @see_also: PolkitBackendLocalAuthority
+ * @see_also: PolkitBackendJsAuthority
  *
  * To implement an authority backend, simply subclass #PolkitBackendAuthority
  * and implement the required VFuncs.
@@ -56,7 +56,7 @@ static guint signals[LAST_SIGNAL] = {0};
 G_DEFINE_ABSTRACT_TYPE (PolkitBackendAuthority, polkit_backend_authority, G_TYPE_OBJECT);
 
 static void
-polkit_backend_authority_init (PolkitBackendAuthority *local_authority)
+polkit_backend_authority_init (PolkitBackendAuthority *authority)
 {
 }
 
@@ -343,6 +343,7 @@ polkit_backend_authority_unregister_authentication_agent (PolkitBackendAuthority
  * polkit_backend_authority_authentication_agent_response:
  * @authority: A #PolkitBackendAuthority.
  * @caller: The system bus name that initiated the query.
+ * @uid: The real UID of the registered agent, or (uid_t)-1 if unknown.
  * @cookie: The cookie passed to the authentication agent from the authority.
  * @identity: The identity that was authenticated.
  * @error: Return location for error or %NULL.
@@ -355,6 +356,7 @@ polkit_backend_authority_unregister_authentication_agent (PolkitBackendAuthority
 gboolean
 polkit_backend_authority_authentication_agent_response (PolkitBackendAuthority    *authority,
                                                         PolkitSubject             *caller,
+                                                        uid_t                      uid,
                                                         const gchar               *cookie,
                                                         PolkitIdentity            *identity,
                                                         GError                   **error)
@@ -373,7 +375,7 @@ polkit_backend_authority_authentication_agent_response (PolkitBackendAuthority  
     }
   else
     {
-      return klass->authentication_agent_response (authority, caller, cookie, identity, error);
+      return klass->authentication_agent_response (authority, caller, uid, cookie, identity, error);
     }
 }
 
@@ -587,6 +589,11 @@ static const gchar *server_introspection_data =
   "      <arg type='s' name='cookie' direction='in'/>"
   "      <arg type='(sa{sv})' name='identity' direction='in'/>"
   "    </method>"
+  "    <method name='AuthenticationAgentResponse2'>"
+  "      <arg type='u' name='uid' direction='in'/>"
+  "      <arg type='s' name='cookie' direction='in'/>"
+  "      <arg type='(sa{sv})' name='identity' direction='in'/>"
+  "    </method>"
   "    <method name='EnumerateTemporaryAuthorizations'>"
   "      <arg type='(sa{sv})' name='subject' direction='in'/>"
   "      <arg type='a(ss(sa{sv})tt)' name='temporary_authorizations' direction='out'/>"
@@ -638,11 +645,8 @@ server_handle_enumerate_actions (Server                 *server,
   for (l = actions; l != NULL; l = l->next)
     {
       PolkitActionDescription *ad = POLKIT_ACTION_DESCRIPTION (l->data);
-      GVariant *value;
-      value = polkit_action_description_to_gvariant (ad);
-      g_variant_ref_sink (value);
-      g_variant_builder_add_value (&builder, value);
-      g_variant_unref (value);
+      g_variant_builder_add_value (&builder,
+                                   polkit_action_description_to_gvariant (ad)); /* A floating value */
     }
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("(a(ssssssuuua{ss}))", &builder));
 
@@ -702,11 +706,10 @@ check_auth_cb (GObject      *source_object,
     }
   else
     {
-      GVariant *value;
-      value = polkit_authorization_result_to_gvariant (result);
-      g_variant_ref_sink (value);
-      g_dbus_method_invocation_return_value (data->invocation, g_variant_new ("(@(bba{ss}))", value));
-      g_variant_unref (value);
+      g_dbus_method_invocation_return_value (data->invocation,
+                                             g_variant_new ("(@(bba{ss}))",
+                                                            polkit_authorization_result_to_gvariant (result))); /* A floating value */
+      g_object_unref (result);
     }
 
   check_auth_data_free (data);
@@ -892,6 +895,7 @@ server_handle_register_authentication_agent (Server                 *server,
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
 
  out:
+  g_variant_unref (subject_gvariant);
   if (subject != NULL)
     g_object_unref (subject);
 }
@@ -947,6 +951,7 @@ server_handle_register_authentication_agent_with_options (Server                
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
 
  out:
+  g_variant_unref (subject_gvariant);
   if (options != NULL)
       g_variant_unref (options);
   if (subject != NULL)
@@ -998,6 +1003,7 @@ server_handle_unregister_authentication_agent (Server                 *server,
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
 
  out:
+  g_variant_unref (subject_gvariant);
   if (subject != NULL)
     g_object_unref (subject);
 }
@@ -1035,6 +1041,7 @@ server_handle_authentication_agent_response (Server                 *server,
   error = NULL;
   if (!polkit_backend_authority_authentication_agent_response (server->authority,
                                                                caller,
+                                                               (uid_t)-1,
                                                                cookie,
                                                                identity,
                                                                &error))
@@ -1047,6 +1054,58 @@ server_handle_authentication_agent_response (Server                 *server,
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
 
  out:
+  g_variant_unref (identity_gvariant);
+  if (identity != NULL)
+    g_object_unref (identity);
+}
+
+static void
+server_handle_authentication_agent_response2 (Server                 *server,
+                                              GVariant               *parameters,
+                                              PolkitSubject          *caller,
+                                              GDBusMethodInvocation  *invocation)
+{
+  const gchar *cookie;
+  GVariant *identity_gvariant;
+  PolkitIdentity *identity;
+  GError *error;
+  guint32 uid;
+
+  identity = NULL;
+
+  g_variant_get (parameters,
+                 "(u&s@(sa{sv}))",
+                 &uid,
+                 &cookie,
+                 &identity_gvariant);
+
+  error = NULL;
+  identity = polkit_identity_new_for_gvariant (identity_gvariant, &error);
+  if (identity == NULL)
+    {
+      g_prefix_error (&error, "Error getting identity: ");
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      g_error_free (error);
+      goto out;
+    }
+
+  error = NULL;
+  if (!polkit_backend_authority_authentication_agent_response (server->authority,
+                                                               caller,
+                                                               (uid_t)uid,
+                                                               cookie,
+                                                               identity,
+                                                               &error))
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      g_error_free (error);
+      goto out;
+    }
+
+  g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
+
+ out:
+  g_variant_unref (identity_gvariant);
   if (identity != NULL)
     g_object_unref (identity);
 }
@@ -1098,17 +1157,15 @@ server_handle_enumerate_temporary_authorizations (Server                 *server
   for (l = authorizations; l != NULL; l = l->next)
     {
       PolkitTemporaryAuthorization *a = POLKIT_TEMPORARY_AUTHORIZATION (l->data);
-      GVariant *value;
-      value = polkit_temporary_authorization_to_gvariant (a);
-      g_variant_ref_sink (value);
-      g_variant_builder_add_value (&builder, value);
-      g_variant_unref (value);
+      g_variant_builder_add_value (&builder,
+                                   polkit_temporary_authorization_to_gvariant (a)); /* A floating value */
     }
   g_list_foreach (authorizations, (GFunc) g_object_unref, NULL);
   g_list_free (authorizations);
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("(a(ss(sa{sv})tt))", &builder));
 
  out:
+  g_variant_unref (subject_gvariant);
   if (subject != NULL)
     g_object_unref (subject);
 }
@@ -1155,6 +1212,7 @@ server_handle_revoke_temporary_authorizations (Server                 *server,
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("()"));
 
  out:
+  g_variant_unref (subject_gvariant);
   if (subject != NULL)
     g_object_unref (subject);
 }
@@ -1222,6 +1280,8 @@ server_handle_method_call (GDBusConnection        *connection,
     server_handle_unregister_authentication_agent (server, parameters, caller, invocation);
   else if (g_strcmp0 (method_name, "AuthenticationAgentResponse") == 0)
     server_handle_authentication_agent_response (server, parameters, caller, invocation);
+  else if (g_strcmp0 (method_name, "AuthenticationAgentResponse2") == 0)
+    server_handle_authentication_agent_response2 (server, parameters, caller, invocation);
   else if (g_strcmp0 (method_name, "EnumerateTemporaryAuthorizations") == 0)
     server_handle_enumerate_temporary_authorizations (server, parameters, caller, invocation);
   else if (g_strcmp0 (method_name, "RevokeTemporaryAuthorizations") == 0)
@@ -1348,85 +1408,141 @@ polkit_backend_authority_register (PolkitBackendAuthority   *authority,
 /**
  * polkit_backend_authority_get:
  *
- * Loads all #GIOModule<!-- -->s from <filename>$(libdir)/polkit-1/extensions</filename> to determine
- * what implementation of #PolkitBackendAuthority to use. Then instantiates an object of the
- * implementation with the highest priority and unloads all other modules.
+ * Gets the #PolkitBackendAuthority to use.
  *
  * Returns: A #PolkitBackendAuthority. Free with g_object_unref().
- **/
+ */
 PolkitBackendAuthority *
 polkit_backend_authority_get (void)
 {
-  static GIOExtensionPoint *ep = NULL;
-  static volatile GType local_authority_type = G_TYPE_INVALID;
-  GList *modules;
-  GList *authority_implementations;
-  GType authority_type;
   PolkitBackendAuthority *authority;
-  gchar *s;
 
-  /* define extension points */
-  if (ep == NULL)
-    {
-      ep = g_io_extension_point_register (POLKIT_BACKEND_AUTHORITY_EXTENSION_POINT_NAME);
-      g_io_extension_point_set_required_type (ep, POLKIT_BACKEND_TYPE_AUTHORITY);
-    }
+  /* TODO: move to polkitd/main.c */
 
-  /* make sure local types are registered */
-  if (local_authority_type == G_TYPE_INVALID)
-    {
-      local_authority_type = POLKIT_BACKEND_TYPE_LOCAL_AUTHORITY;
-    }
-
-  /* load all modules */
-  modules = g_io_modules_load_all_in_directory (PACKAGE_LIB_DIR "/polkit-1/extensions");
-
-  /* find all extensions; we have at least one here since we've registered the local backend */
-  authority_implementations = g_io_extension_point_get_extensions (ep);
-
-  /* the returned list is sorted according to priority so just take the highest one */
-  authority_type = g_io_extension_get_type ((GIOExtension*) authority_implementations->data);
-  authority = POLKIT_BACKEND_AUTHORITY (g_object_new (authority_type, NULL));
-
-  /* unload all modules; the module our instantiated authority is in won't be unloaded because
-   * we've instantiated a reference to a type in this module
-   */
-  g_list_foreach (modules, (GFunc) g_type_module_unuse, NULL);
-  g_list_free (modules);
-
-  /* First announce that we've started in the generic log */
+  /* Announce that we've started in the generic log */
   openlog ("polkitd",
            LOG_PID,
            LOG_DAEMON);  /* system daemons without separate facility value */
-  syslog (LOG_INFO,
-          "started daemon version %s using authority implementation `%s' version `%s'",
-          VERSION,
-          polkit_backend_authority_get_name (authority),
-          polkit_backend_authority_get_version (authority));
+  syslog (LOG_INFO, "Started polkitd version %s", VERSION);
   closelog ();
 
-  /* and then log to the secure log */
-  s = g_strdup_printf ("polkitd(authority=%s)", polkit_backend_authority_get_name (authority));
-  openlog (s,
-           0,
+  /* then start logging to the secure log */
+  openlog ("polkitd",
+           LOG_PID,
            LOG_AUTHPRIV); /* security/authorization messages (private) */
-  /* Ugh, can't free the string - gah, thanks openlog(3) */
-  /*g_free (s);*/
+
+  authority = POLKIT_BACKEND_AUTHORITY (g_object_new (POLKIT_BACKEND_TYPE_JS_AUTHORITY, NULL));
 
   return authority;
 }
+
+/* ---------------------------------------------------------------------------------------------------- */
+
+typedef enum
+{
+  _COLOR_RESET,
+  _COLOR_BOLD_ON,
+  _COLOR_INVERSE_ON,
+  _COLOR_BOLD_OFF,
+  _COLOR_FG_BLACK,
+  _COLOR_FG_RED,
+  _COLOR_FG_GREEN,
+  _COLOR_FG_YELLOW,
+  _COLOR_FG_BLUE,
+  _COLOR_FG_MAGENTA,
+  _COLOR_FG_CYAN,
+  _COLOR_FG_WHITE,
+  _COLOR_BG_RED,
+  _COLOR_BG_GREEN,
+  _COLOR_BG_YELLOW,
+  _COLOR_BG_BLUE,
+  _COLOR_BG_MAGENTA,
+  _COLOR_BG_CYAN,
+  _COLOR_BG_WHITE
+} _Color;
+
+static gboolean _color_stdin_is_tty = FALSE;
+static gboolean _color_initialized = FALSE;
+
+static void
+_color_init (void)
+{
+  if (_color_initialized)
+    return;
+  _color_initialized = TRUE;
+  _color_stdin_is_tty = (isatty (STDIN_FILENO) != 0 && isatty (STDOUT_FILENO) != 0);
+}
+
+static const gchar *
+_color_get (_Color color)
+{
+  const gchar *str;
+
+  _color_init ();
+
+  if (!_color_stdin_is_tty)
+    return "";
+
+  str = NULL;
+  switch (color)
+    {
+    case _COLOR_RESET:      str="\x1b[0m"; break;
+    case _COLOR_BOLD_ON:    str="\x1b[1m"; break;
+    case _COLOR_INVERSE_ON: str="\x1b[7m"; break;
+    case _COLOR_BOLD_OFF:   str="\x1b[22m"; break;
+    case _COLOR_FG_BLACK:   str="\x1b[30m"; break;
+    case _COLOR_FG_RED:     str="\x1b[31m"; break;
+    case _COLOR_FG_GREEN:   str="\x1b[32m"; break;
+    case _COLOR_FG_YELLOW:  str="\x1b[33m"; break;
+    case _COLOR_FG_BLUE:    str="\x1b[34m"; break;
+    case _COLOR_FG_MAGENTA: str="\x1b[35m"; break;
+    case _COLOR_FG_CYAN:    str="\x1b[36m"; break;
+    case _COLOR_FG_WHITE:   str="\x1b[37m"; break;
+    case _COLOR_BG_RED:     str="\x1b[41m"; break;
+    case _COLOR_BG_GREEN:   str="\x1b[42m"; break;
+    case _COLOR_BG_YELLOW:  str="\x1b[43m"; break;
+    case _COLOR_BG_BLUE:    str="\x1b[44m"; break;
+    case _COLOR_BG_MAGENTA: str="\x1b[45m"; break;
+    case _COLOR_BG_CYAN:    str="\x1b[46m"; break;
+    case _COLOR_BG_WHITE:   str="\x1b[47m"; break;
+    default:
+      g_assert_not_reached ();
+      break;
+    }
+  return str;
+}
+
+/* ---------------------------------------------------------------------------------------------------- */
 
 void
 polkit_backend_authority_log (PolkitBackendAuthority *authority,
                               const gchar *format,
                               ...)
 {
+  GTimeVal now;
+  time_t now_time;
+  struct tm *now_tm;
+  gchar time_buf[128];
+  gchar *message;
   va_list var_args;
 
   g_return_if_fail (POLKIT_BACKEND_IS_AUTHORITY (authority));
 
   va_start (var_args, format);
-  vsyslog (LOG_NOTICE, format, var_args);
-
+  message = g_strdup_vprintf (format, var_args);
   va_end (var_args);
+
+  syslog (LOG_NOTICE, "%s", message);
+
+  g_get_current_time (&now);
+  now_time = (time_t) now.tv_sec;
+  now_tm = localtime (&now_time);
+  strftime (time_buf, sizeof time_buf, "%H:%M:%S", now_tm);
+  g_print ("%s%s%s.%03d%s: %s\n",
+           _color_get (_COLOR_BOLD_ON), _color_get (_COLOR_FG_YELLOW),
+           time_buf, (gint) now.tv_usec / 1000,
+           _color_get (_COLOR_RESET),
+           message);
+
+  g_free (message);
 }

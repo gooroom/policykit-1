@@ -1,0 +1,20 @@
+debian/catalog.xml                      usr/share/xml/polkit-1
+debian/sysusers.d/polkitd.conf          usr/lib/sysusers.d
+etc/pam.d/polkit-1                      usr/lib/pam.d
+lib/systemd/system/
+usr/bin/pkaction
+usr/bin/pkcheck
+usr/bin/pkttyagent
+usr/lib/polkit-1/polkit-agent-helper-1
+usr/lib/polkit-1/polkitd
+usr/share/dbus-1/
+usr/share/gettext/
+usr/share/locale/
+usr/share/man/man1/pkaction.*
+usr/share/man/man1/pkcheck.*
+usr/share/man/man1/pkttyagent.*
+usr/share/man/man8/polkit.*
+usr/share/man/man8/polkitd.*
+usr/share/polkit-1/actions
+usr/share/polkit-1/policyconfig-1.dtd
+usr/share/polkit-1/rules.d

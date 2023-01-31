@@ -122,7 +122,10 @@ struct netgroup *netgroup_parse_all() {
     char * line = NULL;
     ssize_t line_size = getline(&line, &line_alloc, stream);
     if (line_size == -1)
-      break;
+      {
+	free(line);
+	break;
+      }
 
     struct netgroup *nextgroup = netgroup_parse_line(line);
     free(line);
@@ -323,7 +326,7 @@ struct entry *netgroup_iter_next(struct netgroup_iter *iter) {
 
       // Grow the stack
       iter->depth++;
-      if (iter->depth > NETGROUP_MAX_DEPTH) {
+      if (iter->depth >= NETGROUP_MAX_DEPTH) {
         iter->depth = -1;
         return NULL; // Too much recursion
       }

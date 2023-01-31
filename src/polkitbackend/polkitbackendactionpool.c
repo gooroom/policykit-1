@@ -40,7 +40,6 @@
 
 typedef struct
 {
-  gchar *action_id;
   gchar *vendor_name;
   gchar *vendor_url;
   gchar *icon_name;
@@ -62,7 +61,6 @@ typedef struct
 static void
 parsed_action_free (ParsedAction *action)
 {
-  g_free (action->action_id);
   g_free (action->vendor_name);
   g_free (action->vendor_url);
   g_free (action->icon_name);
@@ -134,7 +132,7 @@ polkit_backend_action_pool_init (PolkitBackendActionPool *pool)
 
   priv->parsed_actions = g_hash_table_new_full (g_str_hash,
                                                 g_str_equal,
-                                                NULL,
+                                                g_free,
                                                 (GDestroyNotify) parsed_action_free);
 
   priv->parsed_files = g_hash_table_new_full (g_str_hash,
@@ -988,7 +986,6 @@ _end (void *data, const char *el)
           icon_name = pd->global_icon_name;
 
         action = g_new0 (ParsedAction, 1);
-        action->action_id = g_strdup (pd->action_id);
         action->vendor_name = g_strdup (vendor);
         action->vendor_url = g_strdup (vendor_url);
         action->icon_name = g_strdup (icon_name);
@@ -1003,7 +1000,8 @@ _end (void *data, const char *el)
         action->implicit_authorization_inactive = pd->implicit_authorization_inactive;
         action->implicit_authorization_active = pd->implicit_authorization_active;
 
-        g_hash_table_insert (priv->parsed_actions, action->action_id, action);
+        g_hash_table_insert (priv->parsed_actions, g_strdup (pd->action_id),
+                             action);
 
         /* we steal these hash tables */
         pd->annotations = NULL;
@@ -1051,7 +1049,6 @@ process_policy_file (PolkitBackendActionPool *pool,
 
   pd.pool = pool;
 
-  pd.parser = XML_ParserCreate_MM (NULL, NULL, NULL);
   pd.parser = XML_ParserCreate (NULL);
   pd.stack_depth = 0;
   XML_SetUserData (pd.parser, &pd);
@@ -1084,6 +1081,7 @@ process_policy_file (PolkitBackendActionPool *pool,
 
   XML_ParserFree (pd.parser);
 
+  pd_unref_data (&pd);
   return TRUE;
 
 error:
@@ -1108,7 +1106,7 @@ _localize (GHashTable *translations,
            const gchar *lang)
 {
   const gchar *result;
-  gchar lang2[256];
+  gchar **langs;
   guint n;
 
   if (lang == NULL)
@@ -1123,16 +1121,14 @@ _localize (GHashTable *translations,
     goto out;
 
   /* we could have a translation for 'da' but lang=='da_DK'; cut off the last part and try again */
-  strncpy (lang2, lang, sizeof (lang2));
-  for (n = 0; lang2[n] != '\0'; n++)
+  langs = g_get_locale_variants (lang);
+  for (n = 0; langs[n] != NULL; n++)
     {
-      if (lang2[n] == '_')
-        {
-          lang2[n] = '\0';
-          break;
-        }
+      result = (const char *) g_hash_table_lookup (translations, (void *) langs[n]);
+      if (result != NULL)
+        break;
     }
-  result = (const char *) g_hash_table_lookup (translations, (void *) lang2);
+  g_strfreev (langs);
   if (result != NULL)
     goto out;
 

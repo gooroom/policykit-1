@@ -37,10 +37,7 @@
  *
  * Typically authentication agents use #PolkitAgentSession to
  * authenticate users (via passwords) and communicate back the
- * authentication result to the PolicyKit daemon.  This is however not
- * requirement. Depending on the system an authentication agent may
- * use other means (such as a Yes/No dialog) to obtain sufficient
- * evidence that the user is one of the requested identities.
+ * authentication result to the PolicyKit daemon.
  *
  * To register a #PolkitAgentListener with the PolicyKit daemon, use
  * polkit_agent_listener_register() or
@@ -132,6 +129,8 @@ server_free (Server *server)
     g_object_unref (server->subject);
 
   g_free (server->object_path);
+
+  g_free (server);
 }
 
 static gboolean
@@ -157,7 +156,6 @@ server_register (Server   *server,
                                                                          NULL,
                                                                          &local_error))
     {
-      g_warning ("Unable to register authentication agent: %s", local_error->message);
       g_propagate_error (error, local_error);
     }
   else
@@ -180,10 +178,10 @@ on_notify_authority_owner (GObject    *object,
   owner = polkit_authority_get_owner (server->authority);
   if (owner == NULL)
     {
-      g_printerr ("PolicyKit daemon disconnected from the bus.\n");
+      g_debug ("PolicyKit daemon disconnected from the bus.\n");
 
       if (server->is_registered)
-        g_printerr ("We are no longer a registered authentication agent.\n");
+        g_debug ("We are no longer a registered authentication agent.\n");
 
       server->is_registered = FALSE;
     }
@@ -194,17 +192,17 @@ on_notify_authority_owner (GObject    *object,
         {
           GError *error;
 
-          g_printerr ("PolicyKit daemon reconnected to bus.\n");
-          g_printerr ("Attempting to re-register as an authentication agent.\n");
+          g_debug ("PolicyKit daemon reconnected to bus.\n");
+          g_debug ("Attempting to re-register as an authentication agent.\n");
 
           error = NULL;
           if (server_register (server, &error))
             {
-              g_printerr ("We are now a registered authentication agent.\n");
+              g_debug ("We are now a registered authentication agent.\n");
             }
           else
             {
-              g_printerr ("Failed to register as an authentication agent: %s\n", error->message);
+              g_debug ("Failed to register as an authentication agent: %s\n", error->message);
               g_error_free (error);
             }
         }
@@ -260,10 +258,9 @@ server_new (PolkitSubject  *subject,
   if (!server_init_sync (server, cancellable, error))
     {
       server_free (server);
-      goto out;
+      return NULL;
     }
 
- out:
   return server;
 }
 
@@ -424,10 +421,8 @@ polkit_agent_listener_register_with_options (PolkitAgentListener      *listener,
 
   if (flags & POLKIT_AGENT_REGISTER_FLAGS_RUN_IN_THREAD)
     {
-      server->thread = g_thread_create (server_thread_func,
-                                        server,
-                                        TRUE,
-                                        error);
+      server->thread = g_thread_try_new ("polkit agent listener",
+					 server_thread_func, server, error);
       if (server->thread == NULL)
         {
           server_free (server);
@@ -444,6 +439,7 @@ polkit_agent_listener_register_with_options (PolkitAgentListener      *listener,
           server->thread_initialization_error = NULL;
           g_thread_join (server->thread);
           server_free (server);
+          server = NULL;
           goto out;
         }
     }
@@ -536,6 +532,15 @@ listener_died (gpointer user_data,
   server_free (server);
 }
 
+/**
+ * polkit_agent_register_listener:
+ * @listener: A #PolkitAgentListener.
+ * @subject: The subject to become an authentication agent for, typically a #PolkitUnixSession object.
+ * @object_path: The D-Bus object path to use for the authentication agent or %NULL for the default object path.
+ * @error: Return location for error.
+ *
+ * (deprecated)
+ */
 gboolean
 polkit_agent_register_listener (PolkitAgentListener  *listener,
                                 PolkitSubject        *subject,
@@ -564,8 +569,8 @@ polkit_agent_register_listener (PolkitAgentListener  *listener,
 
 typedef struct
 {
-  Server *server;
   gchar *cookie;
+  GHashTable *cookie_to_pending_auth;
   GDBusMethodInvocation *invocation;
   GCancellable *cancellable;
 } AuthData;
@@ -576,6 +581,7 @@ auth_data_free (AuthData *data)
   g_free (data->cookie);
   g_object_unref (data->invocation);
   g_object_unref (data->cancellable);
+  g_hash_table_unref (data->cookie_to_pending_auth);
   g_free (data);
 }
 
@@ -602,7 +608,7 @@ auth_cb (GObject      *source_object,
       g_dbus_method_invocation_return_value (data->invocation, NULL);
     }
 
-  g_hash_table_remove (data->server->cookie_to_pending_auth, data->cookie);
+  g_hash_table_remove (data->cookie_to_pending_auth, data->cookie);
 
   auth_data_free (data);
 }
@@ -663,7 +669,7 @@ auth_agent_handle_begin_authentication (Server                 *server,
   identities = g_list_reverse (identities);
 
   data = g_new0 (AuthData, 1);
-  data->server = server;
+  data->cookie_to_pending_auth = g_hash_table_ref (server->cookie_to_pending_auth);
   data->cookie = g_strdup (cookie);
   data->invocation = g_object_ref (invocation);
   data->cancellable = g_cancellable_new ();
@@ -741,7 +747,7 @@ polkit_agent_listener_class_init (PolkitAgentListenerClass *klass)
  * @icon_name: A themed icon name representing the action or %NULL.
  * @details: Details describing the action.
  * @cookie: The cookie for the authentication request.
- * @identities: A list of #PolkitIdentity objects that the user can choose to authenticate as.
+ * @identities: (element-type Polkit.Identity): A list of #PolkitIdentity objects that the user can choose to authenticate as.
  * @cancellable: A #GCancellable.
  * @callback: Function to call when the user is done authenticating.
  * @user_data: Data to pass to @callback.

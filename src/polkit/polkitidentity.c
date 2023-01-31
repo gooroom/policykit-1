@@ -49,9 +49,9 @@ base_init (gpointer g_iface)
 GType
 polkit_identity_get_type (void)
 {
-  static GType iface_type = 0;
+  static volatile gsize g_define_type_id__volatile = 0;
 
-  if (iface_type == 0)
+  if (g_once_init_enter (&g_define_type_id__volatile))
     {
       static const GTypeInfo info =
       {
@@ -67,12 +67,14 @@ polkit_identity_get_type (void)
         NULL                    /* value_table    */
       };
 
-      iface_type = g_type_register_static (G_TYPE_INTERFACE, "PolkitIdentity", &info, 0);
+      GType iface_type =
+        g_type_register_static (G_TYPE_INTERFACE, "PolkitIdentity", &info, 0);
 
       g_type_interface_add_prerequisite (iface_type, G_TYPE_OBJECT);
+      g_once_init_leave (&g_define_type_id__volatile, iface_type);
     }
 
-  return iface_type;
+  return g_define_type_id__volatile;
 }
 
 /**
@@ -180,7 +182,15 @@ polkit_identity_from_string  (const gchar   *str,
     }
   else if (g_str_has_prefix (str, "unix-netgroup:"))
     {
+#ifndef HAVE_SETNETGRENT
+      g_set_error (error,
+                   POLKIT_ERROR,
+                   POLKIT_ERROR_FAILED,
+                   "Netgroups are not available on this machine ('%s')",
+                   str);
+#else
       identity = polkit_unix_netgroup_new (str + sizeof "unix-netgroup:" - 1);
+#endif
     }
 
   if (identity == NULL && (error != NULL && *error == NULL))
@@ -196,12 +206,12 @@ polkit_identity_from_string  (const gchar   *str,
   return identity;
 }
 
+/* Note that this returns a floating value. */
 GVariant *
 polkit_identity_to_gvariant (PolkitIdentity *identity)
 {
   GVariantBuilder builder;
   GVariant *dict;
-  GVariant *ret;
   const gchar *kind;
 
   kind = "";
@@ -231,8 +241,7 @@ polkit_identity_to_gvariant (PolkitIdentity *identity)
     }
 
   dict = g_variant_builder_end (&builder);
-  ret = g_variant_new ("(s@a{sv})", kind, dict);
-  return ret;
+  return g_variant_new ("(s@a{sv})", kind, dict);
 }
 
 static GVariant *
@@ -265,6 +274,7 @@ lookup_asv (GVariant            *dict,
                            g_variant_get_type_string (value),
                            type_string);
               g_free (type_string);
+              g_variant_unref (value);
               goto out;
             }
           ret = value;
@@ -342,6 +352,14 @@ polkit_identity_new_for_gvariant (GVariant  *variant,
       GVariant *v;
       const char *name;
 
+#ifndef HAVE_SETNETGRENT
+      g_set_error (error,
+                   POLKIT_ERROR,
+                   POLKIT_ERROR_FAILED,
+                   "Netgroups are not available on this machine");
+      goto out;
+#else
+
       v = lookup_asv (details_gvariant, "name", G_VARIANT_TYPE_STRING, error);
       if (v == NULL)
         {
@@ -351,6 +369,7 @@ polkit_identity_new_for_gvariant (GVariant  *variant,
       name = g_variant_get_string (v, NULL);
       ret = polkit_unix_netgroup_new (name);
       g_variant_unref (v);
+#endif
     }
   else
     {

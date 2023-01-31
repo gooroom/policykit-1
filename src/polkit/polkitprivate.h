@@ -28,11 +28,23 @@
 #include "polkitauthorizationresult.h"
 #include "polkittemporaryauthorization.h"
 
+/* FIXME: This header file is currently installed among other public header
+   files, and the symbols are exported in the shared library.
+
+   For application writers: relying on any function here is strongly
+   discouraged.
+
+   For polkit maintainers: This should be made private if a large ABI break
+   were necessary in the future.  In the meantime, consider that there is
+   non-zero risk that changing these functions might break some applications. */
+
 PolkitActionDescription  *polkit_action_description_new_for_gvariant (GVariant *value);
 GVariant *polkit_action_description_to_gvariant (PolkitActionDescription *action_description);
 
 GVariant *polkit_subject_to_gvariant (PolkitSubject *subject);
 GVariant *polkit_identity_to_gvariant (PolkitIdentity *identity);
+
+gint polkit_unix_process_get_racy_uid__ (PolkitUnixProcess *process, GError **error);
 
 PolkitSubject  *polkit_subject_new_for_gvariant (GVariant *variant, GError **error);
 PolkitIdentity *polkit_identity_new_for_gvariant (GVariant *variant, GError **error);
@@ -40,6 +52,11 @@ PolkitIdentity *polkit_identity_new_for_gvariant (GVariant *variant, GError **er
 PolkitAuthorizationResult  *polkit_authorization_result_new_for_gvariant (GVariant *value);
 GVariant *polkit_authorization_result_to_gvariant (PolkitAuthorizationResult *authorization_result);
 
+PolkitTemporaryAuthorization *polkit_temporary_authorization_new    (const gchar                  *id,
+                                                                     const gchar                  *action_id,
+                                                                     PolkitSubject                *subject,
+                                                                     guint64                       time_obtained,
+                                                                     guint64                       time_expires);
 PolkitTemporaryAuthorization *polkit_temporary_authorization_new_for_gvariant (GVariant *value,
                                                                                GError   **error);
 GVariant *polkit_temporary_authorization_to_gvariant (PolkitTemporaryAuthorization *authorization);

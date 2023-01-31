@@ -1,2 +1,6 @@
-rm_conffile /etc/dbus-1/system.d/org.freedesktop.PolicyKit1.conf 0.105-22~
-rm_conffile /etc/polkit-1/nullbackend.conf.d/50-nullbackend.conf 0.105-26~
+rm_conffile /etc/dbus-1/system.d/org.freedesktop.PolicyKit1.conf 0.115-2~
+rm_conffile /etc/pam.d/polkit-1 122-2~
+rm_conffile /etc/polkit-1/localauthority.conf.d/50-localauthority.conf 121+compat0.1-1~
+rm_conffile /etc/polkit-1/localauthority.conf.d/51-debian-sudo.conf 121+compat0.1-1~
+rm_conffile /etc/polkit-1/localauthority.conf.d/51-ubuntu-admin.conf 121+compat0.1-1~
+rm_conffile /etc/polkit-1/nullbackend.conf.d/50-nullbackend.conf 0.109-1~

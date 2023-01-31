@@ -32,6 +32,7 @@
  * authentication dialog is removed.
  */
 
+#include "config.h"
 #include <polkit/polkit.h>
 
 static gboolean
@@ -101,8 +102,6 @@ main (int argc, char *argv[])
   PolkitAuthority *authority;
   GCancellable *cancellable;
 
-  g_type_init ();
-
   if (argc != 2)
     {
       g_printerr ("usage: %s <action_id>\n", argv[0]);
@@ -127,7 +126,7 @@ main (int argc, char *argv[])
       g_printerr ("Parent process was reaped by init(1)\n");
       return 1;
     }
-  subject = polkit_unix_process_new (parent_pid);
+  subject = polkit_unix_process_new_for_owner (parent_pid, 0, getuid ());
 
   cancellable = g_cancellable_new ();
 

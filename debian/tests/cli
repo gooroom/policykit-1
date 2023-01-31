@@ -23,6 +23,16 @@ assert_in() {
     fi
 }
 
+if [ $(id -u) = 0 ]; then
+    # lxc autopkgtest containers don't always have dbus already running
+    service dbus start || :
+fi
+
+if ! [ -e /run/dbus/system_bus_socket ]; then
+    echo "SKIP: dbus system bus not running and could not be started"
+    exit 77
+fi
+
 echo "TEST: pkaction"
 assert_in "org.freedesktop.policykit.exec" "$(pkaction)"
 assert_eq "org.freedesktop.policykit.exec" "$(pkaction -a org.freedesktop.policykit.exec)"

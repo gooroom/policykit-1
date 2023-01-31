@@ -1,0 +1,5 @@
+etc/polkit-1/rules.d/49-polkit-pkla-compat.rules usr/share/polkit-1/rules.d
+usr/sbin/pkla-admin-identities
+usr/sbin/pkla-check-authorization
+usr/share/man/man8/pkla-*
+usr/share/man/man8/pklocalauthority.*

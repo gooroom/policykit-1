@@ -22,7 +22,6 @@
 #ifndef __POLKIT_AGENT_HELPER_PRIVATE_H
 #define __POLKIT_AGENT_HELPER_PRIVATE_H
 
-#define _GNU_SOURCE
 #include <polkit/polkit.h>
 
 /* Development aid: define PAH_DEBUG to get debugging output. Do _NOT_
@@ -37,6 +36,8 @@
 #endif
 
 int _polkit_clearenv (void);
+
+char *read_cookie (int argc, char **argv);
 
 gboolean send_dbus_message (const char *cookie, const char *user);
 

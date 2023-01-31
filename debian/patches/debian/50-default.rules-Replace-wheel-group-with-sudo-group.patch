@@ -1,0 +1,27 @@
+From: Simon McVittie <smcv@debian.org>
+Date: Fri, 20 Jan 2023 09:54:35 +0000
+Subject: 50-default.rules: Replace wheel group with sudo group
+
+On Red Hat derivatives, every member of group 'wheel' is necessarily
+privileged. On Debian derivatives, there is no 'wheel' group, and
+the equivalent is group 'sudo' as documented in the base-passwd package.
+
+Based on a 2011 change by Michael Biebl.
+
+Co-authored-by: Michael Biebl <biebl@debian.org>
+Forwarded: not-needed, Debian-specific
+---
+ src/polkitbackend/50-default.rules | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/polkitbackend/50-default.rules b/src/polkitbackend/50-default.rules
+index f427ae1..1f038fc 100644
+--- a/src/polkitbackend/50-default.rules
++++ b/src/polkitbackend/50-default.rules
+@@ -8,5 +8,5 @@
+ // about configuring polkit.
+ 
+ polkit.addAdminRule(function(action, subject) {
+-    return ["unix-group:wheel"];
++    return ["unix-group:sudo"];
+ });

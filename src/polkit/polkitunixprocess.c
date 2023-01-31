@@ -29,6 +29,13 @@
 #include <sys/sysctl.h>
 #include <sys/user.h>
 #endif
+#ifdef HAVE_NETBSD
+#include <sys/param.h>
+#include <sys/sysctl.h>
+#endif
+#ifdef HAVE_OPENBSD
+#include <sys/sysctl.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -44,12 +51,89 @@
  * @title: PolkitUnixProcess
  * @short_description: Unix processs
  *
- * An object for representing a UNIX process.
+ * An object for representing a UNIX process.  NOTE: This object as
+ * designed is now known broken; a mechanism to exploit a delay in
+ * start time in the Linux kernel was identified.  Avoid
+ * calling polkit_subject_equal() to compare two processes.
  *
  * To uniquely identify processes, both the process id and the start
  * time of the process (a monotonic increasing value representing the
  * time since the kernel was started) is used.
+ *
+ * NOTE: This object stores, and provides access to, the real UID of the
+ * process.  That value can change over time (with set*uid*(2) and exec*(2)).
+ * Checks whether an operation is allowed need to take care to use the UID
+ * value as of the time when the operation was made (or, following the open()
+ * privilege check model, when the connection making the operation possible
+ * was initiated).  That is usually done by initializing this with
+ * polkit_unix_process_new_for_owner() with trusted data.
  */
+
+/* See https://gitlab.freedesktop.org/polkit/polkit/issues/75
+
+  But quoting the original email in full here to ensure it's preserved:
+
+  From: Jann Horn <jannh@google.com>
+  Subject: [SECURITY] polkit: temporary auth hijacking via PID reuse and non-atomic fork
+  Date: Wednesday, October 10, 2018 5:34 PM
+
+When a (non-root) user attempts to e.g. control systemd units in the system
+instance from an active session over DBus, the access is gated by a polkit
+policy that requires "auth_admin_keep" auth. This results in an auth prompt
+being shown to the user, asking the user to confirm the action by entering the
+password of an administrator account.
+
+After the action has been confirmed, the auth decision for "auth_admin_keep" is
+cached for up to five minutes. Subject to some restrictions, similar actions can
+then be performed in this timespan without requiring re-auth:
+
+ - The PID of the DBus client requesting the new action must match the PID of
+   the DBus client requesting the old action (based on SO_PEERCRED information
+   forwarded by the DBus daemon).
+ - The "start time" of the client's PID (as seen in /proc/$pid/stat, field 22)
+   must not have changed. The granularity of this timestamp is in the
+   millisecond range.
+ - polkit polls every two seconds whether a process with the expected start time
+   still exists. If not, the temporary auth entry is purged.
+
+Without the start time check, this would obviously be buggy because an attacker
+could simply wait for the legitimate client to disappear, then create a new
+client with the same PID.
+
+Unfortunately, the start time check is bypassable because fork() is not atomic.
+Looking at the source code of copy_process() in the kernel:
+
+        p->start_time = ktime_get_ns();
+        p->real_start_time = ktime_get_boot_ns();
+        [...]
+        retval = copy_thread_tls(clone_flags, stack_start, stack_size, p, tls);
+        if (retval)
+                goto bad_fork_cleanup_io;
+
+        if (pid != &init_struct_pid) {
+                pid = alloc_pid(p->nsproxy->pid_ns_for_children);
+                if (IS_ERR(pid)) {
+                        retval = PTR_ERR(pid);
+                        goto bad_fork_cleanup_thread;
+                }
+        }
+
+The ktime_get_boot_ns() call is where the "start time" of the process is
+recorded. The alloc_pid() call is where a free PID is allocated. In between
+these, some time passes; and because the copy_thread_tls() call between them can
+access userspace memory when sys_clone() is invoked through the 32-bit syscall
+entry point, an attacker can even stall the kernel arbitrarily long at this
+point (by supplying a pointer into userspace memory that is associated with a
+userfaultfd or is backed by a custom FUSE filesystem).
+
+This means that an attacker can immediately call sys_clone() when the victim
+process is created, often resulting in a process that has the exact same start
+time reported in procfs; and then the attacker can delay the alloc_pid() call
+until after the victim process has died and the PID assignment has cycled
+around. This results in an attacker process that polkit can't distinguish from
+the victim process.
+*/
+
 
 /**
  * PolkitUnixProcess:
@@ -83,11 +167,13 @@ static void subject_iface_init (PolkitSubjectIface *subject_iface);
 static guint64 get_start_time_for_pid (gint    pid,
                                        GError **error);
 
-static gint _polkit_unix_process_get_owner (PolkitUnixProcess  *process,
-                                            GError            **error);
-
-#ifdef HAVE_FREEBSD
-static gboolean get_kinfo_proc (gint pid, struct kinfo_proc *p);
+#if defined(HAVE_FREEBSD) || defined(HAVE_NETBSD) || defined(HAVE_OPENBSD)
+static gboolean get_kinfo_proc (gint pid,
+#if defined(HAVE_NETBSD)
+                                struct kinfo_proc2 *p);
+#else
+                                struct kinfo_proc *p);
+#endif
 #endif
 
 G_DEFINE_TYPE_WITH_CODE (PolkitUnixProcess, polkit_unix_process, G_TYPE_OBJECT,
@@ -170,7 +256,7 @@ polkit_unix_process_constructed (GObject *object)
     {
       GError *error;
       error = NULL;
-      process->uid = _polkit_unix_process_get_owner (process, &error);
+      process->uid = polkit_unix_process_get_racy_uid__ (process, &error);
       if (error != NULL)
         {
           process->uid = -1;
@@ -222,7 +308,7 @@ polkit_unix_process_class_init (PolkitUnixProcessClass *klass)
                                    g_param_spec_int ("uid",
                                                      "User ID",
                                                      "The UNIX user ID",
-                                                     -1,
+                                                     G_MININT,
                                                      G_MAXINT,
                                                      -1,
                                                      G_PARAM_CONSTRUCT |
@@ -259,6 +345,12 @@ polkit_unix_process_class_init (PolkitUnixProcessClass *klass)
  * Gets the user id for @process. Note that this is the real user-id,
  * not the effective user-id.
  *
+ * NOTE: The UID may change over time, so the returned value may not match the
+ * current state of the underlying process; or the UID may have been set by
+ * polkit_unix_process_new_for_owner() or polkit_unix_process_set_uid(),
+ * in which case it may not correspond to the actual UID of the referenced
+ * process at all (at any point in time).
+ *
  * Returns: The user id for @process or -1 if unknown.
  */
 gint
@@ -280,7 +372,6 @@ polkit_unix_process_set_uid (PolkitUnixProcess *process,
                              gint               uid)
 {
   g_return_if_fail (POLKIT_IS_UNIX_PROCESS (process));
-  g_return_if_fail (uid >= -1);
   process->uid = uid;
 }
 
@@ -554,12 +645,45 @@ get_kinfo_proc (pid_t pid, struct kinfo_proc *p)
 }
 #endif
 
+#if defined(HAVE_NETBSD) || defined(HAVE_OPENBSD)
+static gboolean
+get_kinfo_proc (gint pid,
+#ifdef HAVE_NETBSD
+                struct kinfo_proc2 *p)
+#else
+                struct kinfo_proc *p)
+#endif
+{
+  int name[6];
+  u_int namelen;
+  size_t sz;
+
+  sz = sizeof(*p);
+  namelen = 0;
+  name[namelen++] = CTL_KERN;
+#ifdef HAVE_NETBSD
+  name[namelen++] = KERN_PROC2;
+#else
+  name[namelen++] = KERN_PROC;
+#endif
+  name[namelen++] = KERN_PROC_PID;
+  name[namelen++] = pid;
+  name[namelen++] = sz;
+  name[namelen++] = 1;
+
+  if (sysctl (name, namelen, p, &sz, NULL, 0) == -1)
+    return FALSE;
+
+  return TRUE;
+}
+#endif
+
 static guint64
 get_start_time_for_pid (pid_t    pid,
                         GError **error)
 {
   guint64 start_time;
-#ifndef HAVE_FREEBSD
+#if !defined(HAVE_FREEBSD) && !defined(HAVE_NETBSD) && !defined(HAVE_OPENBSD)
   gchar *filename;
   gchar *contents;
   size_t length;
@@ -632,7 +756,11 @@ get_start_time_for_pid (pid_t    pid,
   g_free (filename);
   g_free (contents);
 #else
+#ifdef HAVE_NETBSD
+  struct kinfo_proc2 p;
+#else
   struct kinfo_proc p;
+#endif
 
   start_time = 0;
 
@@ -647,7 +775,11 @@ get_start_time_for_pid (pid_t    pid,
       goto out;
     }
 
+#ifdef HAVE_FREEBSD
   start_time = (guint64) p.ki_start.tv_sec;
+#else
+  start_time = (guint64) p.p_ustart_sec;
+#endif
 
 out:
 #endif
@@ -655,18 +787,28 @@ out:
   return start_time;
 }
 
-static gint
-_polkit_unix_process_get_owner (PolkitUnixProcess  *process,
-                                GError            **error)
+/*
+ * Private: Return the "current" UID.  Note that this is inherently racy,
+ * and the value may already be obsolete by the time this function returns;
+ * this function only guarantees that the UID was valid at some point during
+ * its execution.
+ */
+gint
+polkit_unix_process_get_racy_uid__ (PolkitUnixProcess  *process,
+                                    GError            **error)
 {
   gint result;
   gchar *contents;
   gchar **lines;
-#ifdef HAVE_FREEBSD
+  guint64 start_time;
+#if defined(HAVE_FREEBSD) || defined(HAVE_OPENBSD)
   struct kinfo_proc p;
+#elif defined(HAVE_NETBSD)
+  struct kinfo_proc2 p;
 #else
   gchar filename[64];
   guint n;
+  GError *local_error;
 #endif
 
   g_return_val_if_fail (POLKIT_IS_UNIX_PROCESS (process), 0);
@@ -676,7 +818,7 @@ _polkit_unix_process_get_owner (PolkitUnixProcess  *process,
   lines = NULL;
   contents = NULL;
 
-#ifdef HAVE_FREEBSD
+#if defined(HAVE_FREEBSD) || defined(HAVE_NETBSD) || defined(HAVE_OPENBSD)
   if (get_kinfo_proc (process->pid, &p) == 0)
     {
       g_set_error (error,
@@ -688,7 +830,13 @@ _polkit_unix_process_get_owner (PolkitUnixProcess  *process,
       goto out;
     }
 
+#if defined(HAVE_FREEBSD)
   result = p.ki_uid;
+  start_time = (guint64) p.ki_start.tv_sec;
+#else
+  result = p.p_uid;
+  start_time = (guint64) p.p_ustart_sec;
+#endif
 #else
 
   /* see 'man proc' for layout of the status file
@@ -722,16 +870,36 @@ _polkit_unix_process_get_owner (PolkitUnixProcess  *process,
       else
         {
           result = real_uid;
-          goto out;
+          goto found;
         }
     }
-
   g_set_error (error,
                POLKIT_ERROR,
                POLKIT_ERROR_FAILED,
                "Didn't find any line starting with `Uid:' in file %s",
                filename);
+  goto out;
+
+found:
+  /* The UID and start time are, sadly, not available in a single file.  So,
+   * read the UID first, and then the start time; if the start time is the same
+   * before and after reading the UID, it couldn't have changed.
+   */
+  local_error = NULL;
+  start_time = get_start_time_for_pid (process->pid, &local_error);
+  if (local_error != NULL)
+    {
+      g_propagate_error (error, local_error);
+      goto out;
+    }
 #endif
+
+  if (process->start_time != start_time)
+    {
+      g_set_error (error, POLKIT_ERROR, POLKIT_ERROR_FAILED,
+		   "process with PID %d has been replaced", process->pid);
+      goto out;
+    }
 
 out:
   g_strfreev (lines);
@@ -740,9 +908,16 @@ out:
 }
 
 /* deprecated public method */
+/**
+ * polkit_unix_process_get_owner:
+ * @process: A #PolkitUnixProcess.
+ * @error: Return location for error.
+ *
+ * (deprecated)
+ */
 gint
 polkit_unix_process_get_owner (PolkitUnixProcess  *process,
                                GError            **error)
 {
-  return _polkit_unix_process_get_owner (process, error);
+  return polkit_unix_process_get_racy_uid__ (process, error);
 }

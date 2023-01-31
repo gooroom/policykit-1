@@ -23,8 +23,6 @@
 #  include "config.h"
 #endif
 
-#define _GNU_SOURCE
-
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -53,7 +51,7 @@
 #include <polkitagent/polkitagent.h>
 
 static gchar *original_user_name = NULL;
-static gchar original_cwd[PATH_MAX];
+static gchar *original_cwd;
 static gchar *command_line = NULL;
 static struct passwd *pw;
 
@@ -75,9 +73,13 @@ usage (int argc, char *argv[])
   g_printerr ("pkexec --version |\n"
               "       --help |\n"
               "       --disable-internal-agent |\n"
-              "       [--user username] PROGRAM [ARGUMENTS...]\n"
+              "       [--keep-cwd] [--user username] [PROGRAM] [ARGUMENTS...]\n"
               "\n"
-              "See the pkexec manual page for more details.\n");
+              "See the pkexec manual page for more details.\n"
+	      "\n"
+	      "Report bugs to: %s\n"
+	      "%s home page: <%s>\n", PACKAGE_BUGREPORT, PACKAGE_NAME,
+	      PACKAGE_URL);
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -139,12 +141,27 @@ pam_conversation_function (int n,
   return PAM_CONV_ERR;
 }
 
+/* A work around for:
+ * https://bugzilla.redhat.com/show_bug.cgi?id=753882
+ */
 static gboolean
-open_session (const gchar *user_to_auth)
+xdg_runtime_dir_is_owned_by (const char *path,
+			     uid_t       target_uid)
+{
+  struct stat stbuf;
+
+  return stat (path, &stbuf) == 0 &&
+    stbuf.st_uid == target_uid;
+}
+
+static gboolean
+open_session (const gchar *user_to_auth,
+	      uid_t        target_uid)
 {
   gboolean ret;
   gint rc;
   pam_handle_t *pam_h;
+  char **envlist;
   struct pam_conv conversation;
 
   ret = FALSE;
@@ -175,6 +192,27 @@ open_session (const gchar *user_to_auth)
     }
 
   ret = TRUE;
+
+  envlist = pam_getenvlist (pam_h);
+  if (envlist != NULL)
+    {
+      guint n;
+      for (n = 0; envlist[n]; n++)
+	{
+	  const char *envitem = envlist[n];
+	  
+	  if (g_str_has_prefix (envitem, "XDG_RUNTIME_DIR="))
+	    {
+	      const char *eq = strchr (envitem, '=');
+	      g_assert (eq);
+	      if (!xdg_runtime_dir_is_owned_by (eq + 1, target_uid))
+		continue;
+	    }
+
+	  putenv (envlist[n]);
+	}
+      free (envlist);
+    }
 
 out:
   if (pam_h != NULL)
@@ -230,6 +268,7 @@ fdwalk (FdCallback callback,
 static gchar *
 find_action_for_path (PolkitAuthority *authority,
                       const gchar     *path,
+                      const gchar     *argv1,
                       gboolean        *allow_gui)
 {
   GList *l;
@@ -255,6 +294,7 @@ find_action_for_path (PolkitAuthority *authority,
   for (l = actions; l != NULL; l = l->next)
     {
       PolkitActionDescription *action_desc = POLKIT_ACTION_DESCRIPTION (l->data);
+      const gchar *argv1_for_action;
       const gchar *path_for_action;
       const gchar *allow_gui_annotation;
 
@@ -262,8 +302,17 @@ find_action_for_path (PolkitAuthority *authority,
       if (path_for_action == NULL)
         continue;
 
+      argv1_for_action = polkit_action_description_get_annotation (action_desc, "org.freedesktop.policykit.exec.argv1");
+
       if (g_strcmp0 (path_for_action, path) == 0)
         {
+          /* check against org.freedesktop.policykit.exec.argv1 but only if set */
+          if (argv1_for_action != NULL)
+            {
+              if (g_strcmp0 (argv1, argv1_for_action) != 0)
+                continue;
+            }
+
           action_id = g_strdup (polkit_action_description_get_action_id (action_desc));
 
           allow_gui_annotation = polkit_action_description_get_annotation (action_desc, "org.freedesktop.policykit.exec.allow_gui");
@@ -355,7 +404,7 @@ validate_environment_variable (const gchar *key,
       if (!is_valid_shell (value))
         {
           log_message (LOG_CRIT, TRUE,
-                       "The value for the SHELL variable was not found the /etc/shells file");
+                       "The value for the SHELL variable was not found in the /etc/shells file");
           g_printerr ("\n"
                       "This incident has been reported.\n");
           goto out;
@@ -366,7 +415,7 @@ validate_environment_variable (const gchar *key,
            strstr (value, "..") != NULL)
     {
       log_message (LOG_CRIT, TRUE,
-                   "The value for environment variable %s contains suscipious content",
+                   "The value for environment variable %s contains suspicious content",
                    key);
       g_printerr ("\n"
                   "This incident has been reported.\n");
@@ -391,6 +440,7 @@ main (int argc, char *argv[])
   gboolean opt_show_help;
   gboolean opt_show_version;
   gboolean opt_disable_internal_agent;
+  gboolean opt_keep_cwd;
   PolkitAuthority *authority;
   PolkitAuthorizationResult *result;
   PolkitSubject *subject;
@@ -439,6 +489,15 @@ main (int argc, char *argv[])
   pid_t pid_of_caller;
   gpointer local_agent_handle;
 
+
+  /*
+   * If 'pkexec' is called THIS wrong, someone's probably evil-doing. Don't be nice, just bail out.
+   */
+  if (argc<1)
+    {
+      exit(127);
+    }
+
   ret = 127;
   authority = NULL;
   subject = NULL;
@@ -447,30 +506,13 @@ main (int argc, char *argv[])
   action_id = NULL;
   saved_env = NULL;
   path = NULL;
+  exec_argv = NULL;
   command_line = NULL;
   opt_user = NULL;
   local_agent_handle = NULL;
 
-  /* check for correct invocation */
-  if (geteuid () != 0)
-    {
-      g_printerr ("pkexec must be setuid root\n");
-      goto out;
-    }
-
-  original_user_name = g_strdup (g_get_user_name ());
-  if (original_user_name == NULL)
-    {
-      g_printerr ("Error getting user name.\n");
-      goto out;
-    }
-
-  if (getcwd (original_cwd, sizeof (original_cwd)) == NULL)
-    {
-      g_printerr ("Error getting cwd: %s\n",
-                  g_strerror (errno));
-      goto out;
-    }
+  /* Disable remote file access from GIO. */
+  setenv ("GIO_USE_VFS", "local", 1);
 
   /* First process options and find the command-line to invoke. Avoid using fancy library routines
    * that depend on environtment variables since we haven't cleared the environment just yet.
@@ -478,6 +520,7 @@ main (int argc, char *argv[])
   opt_show_help = FALSE;
   opt_show_version = FALSE;
   opt_disable_internal_agent = FALSE;
+  opt_keep_cwd = FALSE;
   for (n = 1; n < (guint) argc; n++)
     {
       if (strcmp (argv[n], "--help") == 0)
@@ -497,11 +540,20 @@ main (int argc, char *argv[])
               goto out;
             }
 
+          if (opt_user != NULL)
+            {
+              g_printerr ("--user specified twice\n");
+              goto out;
+            }
           opt_user = g_strdup (argv[n]);
         }
       else if (strcmp (argv[n], "--disable-internal-agent") == 0)
         {
           opt_disable_internal_agent = TRUE;
+        }
+      else if (strcmp (argv[n], "--keep-cwd") == 0)
+        {
+          opt_keep_cwd = TRUE;
         }
       else
         {
@@ -522,43 +574,29 @@ main (int argc, char *argv[])
       goto out;
     }
 
+  /* check for correct invocation */
+  if (geteuid () != 0)
+    {
+      g_printerr ("pkexec must be setuid root\n");
+      goto out;
+    }
+
+  original_user_name = g_strdup (g_get_user_name ());
+  if (original_user_name == NULL)
+    {
+      g_printerr ("Error getting user name.\n");
+      goto out;
+    }
+
+  if ((original_cwd = g_get_current_dir ()) == NULL)
+    {
+      g_printerr ("Error getting cwd: %s\n",
+                  g_strerror (errno));
+      goto out;
+    }
+
   if (opt_user == NULL)
     opt_user = g_strdup ("root");
-
-  /* Now figure out the command-line to run - argv is guaranteed to be NULL-terminated, see
-   *
-   *  http://lkml.indiana.edu/hypermail/linux/kernel/0409.2/0287.html
-   *
-   * but do check this is the case.
-   *
-   * We also try to locate the program in the path if a non-absolute path is given.
-   */
-  g_assert (argv[argc] == NULL);
-  path = g_strdup (argv[n]);
-  if (path == NULL)
-    {
-      usage (argc, argv);
-      goto out;
-    }
-  if (path[0] != '/')
-    {
-      /* g_find_program_in_path() is not suspectible to attacks via the environment */
-      s = g_find_program_in_path (path);
-      if (s == NULL)
-        {
-          g_printerr ("Cannot run program %s: %s\n", path, strerror (ENOENT));
-          goto out;
-        }
-      g_free (path);
-      argv[n] = path = s;
-    }
-  if (access (path, F_OK) != 0)
-    {
-      g_printerr ("Error accessing %s: %s\n", path, g_strerror (errno));
-      goto out;
-    }
-  command_line = g_strjoinv (" ", argv + n);
-  exec_argv = argv + n;
 
   /* Look up information about the user we care about - yes, the return
    * value of this function is a bit funky
@@ -573,6 +611,68 @@ main (int argc, char *argv[])
     {
       g_printerr ("Error getting information for user `%s': %s\n", opt_user, g_strerror (rc));
       goto out;
+    }
+
+  /* Now figure out the command-line to run - argv is guaranteed to be NULL-terminated, see
+   *
+   *  http://lkml.indiana.edu/hypermail/linux/kernel/0409.2/0287.html
+   *
+   * but do check this is the case.
+   *
+   * We also try to locate the program in the path if a non-absolute path is given.
+   */
+  g_assert (argv[argc] == NULL);
+  path = g_strdup (argv[n]);
+  if (path == NULL)
+    {
+      GPtrArray *shell_argv;
+
+      path = g_strdup (pwstruct.pw_shell);
+      if (!path)
+        {
+          g_printerr ("No shell configured or error retrieving pw_shell\n");
+          goto out;
+        }
+      /* If you change this, be sure to change the if (!command_line)
+	 case below too */
+      command_line = g_strdup (path);
+      shell_argv = g_ptr_array_new ();
+      g_ptr_array_add (shell_argv, path);
+      g_ptr_array_add (shell_argv, NULL);
+      exec_argv = (char**)g_ptr_array_free (shell_argv, FALSE);
+    }
+  if (path[0] != '/')
+    {
+      /* g_find_program_in_path() is not suspectible to attacks via the environment */
+      s = g_find_program_in_path (path);
+      if (s == NULL)
+        {
+          g_printerr ("Cannot run program %s: %s\n", path, strerror (ENOENT));
+          goto out;
+        }
+      g_free (path);
+      path = s;
+
+      /* argc<2 and pkexec runs just shell, argv is guaranteed to be null-terminated.
+       * /-less shell shouldn't happen, but let's be defensive and don't write to null-termination
+       */
+      if (argv[n] != NULL)
+      {
+        argv[n] = path;
+      }
+    }
+  if (access (path, F_OK) != 0)
+    {
+      g_printerr ("Error accessing %s: %s\n", path, g_strerror (errno));
+      goto out;
+    }
+
+  if (!command_line)
+    {
+      /* If you change this, be sure to change the path == NULL case
+	 above too */
+      command_line = g_strjoinv (" ", argv + n);
+      exec_argv = argv + n;
     }
 
   /* now save the environment variables we care about */
@@ -597,6 +697,28 @@ main (int argc, char *argv[])
       g_ptr_array_add (saved_env, g_strdup (value));
     }
 
+  /* $XAUTHORITY is "special" - if unset, we need to set it to ~/.Xauthority. Yes,
+   * this is broken but it's unfortunately how things work (see fdo #51623 for
+   * details)
+   */
+  if (g_getenv ("XAUTHORITY") == NULL)
+    {
+      const gchar *home;
+
+      /* pre-2.36 GLib does not examine $HOME (it always looks in /etc/passwd) and
+       * this is not what we want
+       */
+      home = g_getenv ("HOME");
+      if (home == NULL)
+        home = g_get_home_dir ();
+
+      if (home != NULL)
+        {
+          g_ptr_array_add (saved_env, g_strdup ("XAUTHORITY"));
+          g_ptr_array_add (saved_env, g_build_filename (home, ".Xauthority", NULL));
+        }
+    }
+
   /* Nuke the environment to get a well-known and sanitized environment to avoid attacks
    * via e.g. the DBUS_SYSTEM_BUS_ADDRESS environment variable and similar.
    */
@@ -605,11 +727,6 @@ main (int argc, char *argv[])
       g_printerr ("Error clearing environment: %s\n", g_strerror (errno));
       goto out;
     }
-
-  /* Initialize the GLib type system - this is needed to interact with the
-   * PolicyKit daemon
-   */
-  g_type_init ();
 
   /* make sure we are nuked if the parent process dies */
 #ifdef __linux__
@@ -664,15 +781,23 @@ main (int argc, char *argv[])
       goto out;
     }
 
-  action_id = find_action_for_path (authority, path, &allow_gui);
+  g_assert (path != NULL);
+  g_assert (exec_argv != NULL);
+  action_id = find_action_for_path (authority,
+                                    path,
+                                    exec_argv[1],
+                                    &allow_gui);
   g_assert (action_id != NULL);
 
   details = polkit_details_new ();
+  polkit_details_insert (details, "user", pw->pw_name);
+  if (pw->pw_gecos != NULL)
+    polkit_details_insert (details, "user.gecos", pw->pw_gecos);
   if (pw->pw_gecos != NULL && strlen (pw->pw_gecos) > 0)
     s = g_strdup_printf ("%s (%s)", pw->pw_gecos, pw->pw_name);
   else
     s = g_strdup_printf ("%s", pw->pw_name);
-  polkit_details_insert (details, "user", s);
+  polkit_details_insert (details, "user.display", s);
   g_free (s);
   polkit_details_insert (details, "program", path);
   polkit_details_insert (details, "command_line", command_line);
@@ -695,7 +820,7 @@ main (int argc, char *argv[])
                                   * be expanded to the path of the program e.g. "/bin/bash" and the latter
                                   * to the user e.g. "John Doe (johndoe)" or "johndoe".
                                   */
-                                 N_("Authentication is needed to run `$(program)' as user $(user)"));
+                                 N_("Authentication is needed to run `$(program)' as user $(user.display)"));
         }
     }
   polkit_details_insert (details, "polkit.gettext_domain", GETTEXT_PACKAGE);
@@ -860,7 +985,8 @@ main (int argc, char *argv[])
    * As evident above, neither su(1) (and, for that matter, nor sudo(8)) does this.
    */
 #ifdef POLKIT_AUTHFW_PAM
-  if (!open_session (pw->pw_name))
+  if (!open_session (pw->pw_name,
+		     pw->pw_uid))
     {
       goto out;
     }
@@ -887,10 +1013,13 @@ main (int argc, char *argv[])
     }
 
   /* change to home directory */
-  if (chdir (pw->pw_dir) != 0)
-    {
-      g_printerr ("Error changing to home directory %s: %s\n", pw->pw_dir, g_strerror (errno));
-      goto out;
+  if (!opt_keep_cwd)
+    {  
+      if (chdir (pw->pw_dir) != 0)
+        {
+          g_printerr ("Error changing to home directory %s: %s\n", pw->pw_dir, g_strerror (errno));
+          goto out;
+        }
     }
 
   /* Log the fact that we're executing a command */
@@ -931,6 +1060,7 @@ main (int argc, char *argv[])
       g_ptr_array_free (saved_env, TRUE);
     }
 
+  g_free (original_cwd);
   g_free (path);
   g_free (command_line);
   g_free (opt_user);

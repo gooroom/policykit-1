@@ -122,7 +122,7 @@ polkit_permission_constructed (GObject *object)
   PolkitPermission *permission = POLKIT_PERMISSION (object);
 
   if (permission->subject == NULL)
-    permission->subject = polkit_unix_process_new (getpid ());
+    permission->subject = polkit_unix_process_new_for_owner (getpid (), 0, getuid ());
 
   if (G_OBJECT_CLASS (polkit_permission_parent_class)->constructed != NULL)
     G_OBJECT_CLASS (polkit_permission_parent_class)->constructed (object);
@@ -137,10 +137,13 @@ polkit_permission_finalize (GObject *object)
   g_free (permission->tmp_authz_id);
   g_object_unref (permission->subject);
 
-  g_signal_handlers_disconnect_by_func (permission->authority,
-                                        on_authority_changed,
-                                        permission);
-  g_object_unref (permission->authority);
+  if (permission->authority != NULL)
+    {
+      g_signal_handlers_disconnect_by_func (permission->authority,
+                                            on_authority_changed,
+                                            permission);
+      g_object_unref (permission->authority);
+    }
 
   if (G_OBJECT_CLASS (polkit_permission_parent_class)->finalize != NULL)
     G_OBJECT_CLASS (polkit_permission_parent_class)->finalize (object);
@@ -454,6 +457,7 @@ changed_check_cb (GObject       *source_object,
   if (result != NULL)
     {
       process_result (permission, result);
+      g_object_unref (result);
     }
   else
     {

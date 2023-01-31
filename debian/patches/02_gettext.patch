@@ -9,7 +9,7 @@ Bug-Ubuntu: https://launchpad.net/bugs/619632
  1 file changed, 49 insertions(+)
 
 diff --git a/src/polkitbackend/polkitbackendactionpool.c b/src/polkitbackend/polkitbackendactionpool.c
-index b16ed2f..3b0e400 100644
+index 3894fe9..955e3ba 100644
 --- a/src/polkitbackend/polkitbackendactionpool.c
 +++ b/src/polkitbackend/polkitbackendactionpool.c
 @@ -24,6 +24,8 @@

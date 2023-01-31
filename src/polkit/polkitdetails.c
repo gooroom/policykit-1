@@ -142,6 +142,8 @@ polkit_details_lookup (PolkitDetails *details,
  * @value: (allow-none): A value.
  *
  * Inserts a copy of @key and @value on @details.
+ *
+ * If @value is %NULL, the key will be removed.
  */
 void
 polkit_details_insert (PolkitDetails *details,
@@ -155,7 +157,10 @@ polkit_details_insert (PolkitDetails *details,
                                            g_str_equal,
                                            g_free,
                                            g_free);
-  g_hash_table_insert (details->hash, g_strdup (key), g_strdup (value));
+  if (value != NULL)
+    g_hash_table_insert (details->hash, g_strdup (key), g_strdup (value));
+  else
+    g_hash_table_remove (details->hash, key);
 }
 
 /**
@@ -190,10 +195,10 @@ polkit_details_get_keys (PolkitDetails *details)
   return ret;
 }
 
+/* Note that this returns a floating value. */
 GVariant *
 polkit_details_to_gvariant (PolkitDetails *details)
 {
-  GVariant *ret;
   GVariantBuilder builder;
 
   g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{ss}"));
@@ -207,8 +212,7 @@ polkit_details_to_gvariant (PolkitDetails *details)
       while (g_hash_table_iter_next (&hash_iter, (gpointer) &key, (gpointer) &value))
         g_variant_builder_add (&builder, "{ss}", key, value);
     }
-  ret = g_variant_builder_end (&builder);
-  return ret;
+  return g_variant_builder_end (&builder);
 }
 
 PolkitDetails *

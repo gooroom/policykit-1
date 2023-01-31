@@ -39,25 +39,35 @@ static void
 send_to_helper (const gchar *str1,
                 const gchar *str2)
 {
+  char *escaped;
+  char *tmp2;
+  size_t len2;
+
+  tmp2 = g_strdup(str2);
+  len2 = strlen(tmp2);
 #ifdef PAH_DEBUG
-  fprintf (stderr, "polkit-agent-helper-1: writing `%s' to stdout\n", str1);
+  fprintf (stderr, "polkit-agent-helper-1: writing `%s ' to stdout\n", str1);
 #endif /* PAH_DEBUG */
-  fprintf (stdout, "%s", str1);
+  fprintf (stdout, "%s ", str1);
+
+  if (len2 > 0 && tmp2[len2 - 1] == '\n')
+    tmp2[len2 - 1] = '\0';
+  escaped = g_strescape (tmp2, NULL);
 #ifdef PAH_DEBUG
-  fprintf (stderr, "polkit-agent-helper-1: writing `%s' to stdout\n", str2);
+  fprintf (stderr, "polkit-agent-helper-1: writing `%s' to stdout\n", escaped);
 #endif /* PAH_DEBUG */
-  fprintf (stdout, "%s", str2);
-  if (strlen (str2) > 0 && str2[strlen (str2) - 1] != '\n')
-    {
+  fprintf (stdout, "%s", escaped);
 #ifdef PAH_DEBUG
-      fprintf (stderr, "polkit-agent-helper-1: writing newline to stdout\n");
+  fprintf (stderr, "polkit-agent-helper-1: writing newline to stdout\n");
 #endif /* PAH_DEBUG */
-      fputc ('\n', stdout);
-    }
+  fputc ('\n', stdout);
 #ifdef PAH_DEBUG
   fprintf (stderr, "polkit-agent-helper-1: flushing stdout\n");
 #endif /* PAH_DEBUG */
   fflush (stdout);
+
+  g_free (escaped);
+  g_free (tmp2);
 }
 
 int
@@ -65,7 +75,7 @@ main (int argc, char *argv[])
 {
   int rc;
   const char *user_to_auth;
-  const char *cookie;
+  char *cookie = NULL;
   struct pam_conv pam_conversation;
   pam_handle_t *pam_h;
   const void *authed_user;
@@ -89,7 +99,7 @@ main (int argc, char *argv[])
 
       /* Special-case a very common error triggered in jhbuild setups */
       s = g_strdup_printf ("Incorrect permissions on %s (needs to be setuid root)", argv[0]);
-      send_to_helper ("PAM_ERROR_MSG ", s);
+      send_to_helper ("PAM_ERROR_MSG", s);
       g_free (s);
       goto error;
     }
@@ -97,7 +107,7 @@ main (int argc, char *argv[])
   openlog ("polkit-agent-helper-1", LOG_CONS | LOG_PID, LOG_AUTHPRIV);
 
   /* check for correct invocation */
-  if (argc != 3)
+  if (!(argc == 2 || argc == 3))
     {
       syslog (LOG_NOTICE, "inappropriate use of helper, wrong number of arguments [uid=%d]", getuid ());
       fprintf (stderr, "polkit-agent-helper-1: wrong number of arguments. This incident has been logged.\n");
@@ -105,7 +115,10 @@ main (int argc, char *argv[])
     }
 
   user_to_auth = argv[1];
-  cookie = argv[2];
+
+  cookie = read_cookie (argc, argv);
+  if (!cookie)
+    goto error;
 
   if (getuid () != 0)
     {
@@ -203,6 +216,8 @@ main (int argc, char *argv[])
       goto error;
     }
 
+  free (cookie);
+
 #ifdef PAH_DEBUG
   fprintf (stderr, "polkit-agent-helper-1: successfully sent D-Bus message to PolicyKit daemon\n");
 #endif /* PAH_DEBUG */
@@ -212,6 +227,7 @@ main (int argc, char *argv[])
   return 0;
 
 error:
+  free (cookie);
   if (pam_h != NULL)
     pam_end (pam_h, rc);
 
@@ -226,9 +242,8 @@ conversation_function (int n, const struct pam_message **msg, struct pam_respons
   struct pam_response *aresp;
   char buf[PAM_MAX_RESP_SIZE];
   int i;
-  gchar *escaped = NULL;
 
-  data = data;
+  (void)data;
   if (n <= 0 || n > PAM_MAX_NUM_MSG)
     return PAM_CONV_ERR;
 
@@ -243,35 +258,13 @@ conversation_function (int n, const struct pam_message **msg, struct pam_respons
         {
 
         case PAM_PROMPT_ECHO_OFF:
-#ifdef PAH_DEBUG
-          fprintf (stderr, "polkit-agent-helper-1: writing `PAM_PROMPT_ECHO_OFF ' to stdout\n");
-#endif /* PAH_DEBUG */
-          fprintf (stdout, "PAM_PROMPT_ECHO_OFF ");
+          send_to_helper ("PAM_PROMPT_ECHO_OFF", msg[i]->msg);
           goto conv1;
 
         case PAM_PROMPT_ECHO_ON:
-#ifdef PAH_DEBUG
-          fprintf (stderr, "polkit-agent-helper-1: writing `PAM_PROMPT_ECHO_ON ' to stdout\n");
-#endif /* PAH_DEBUG */
-          fprintf (stdout, "PAM_PROMPT_ECHO_ON ");
-        conv1:
-#ifdef PAH_DEBUG
-          fprintf (stderr, "polkit-agent-helper-1: writing `%s' to stdout\n", msg[i]->msg);
-#endif /* PAH_DEBUG */
-          if (strlen (msg[i]->msg) > 0 && msg[i]->msg[strlen (msg[i]->msg) - 1] == '\n')
-            msg[i]->msg[strlen (msg[i]->msg) - 1] == '\0';
-          escaped = g_strescape (msg[i]->msg, NULL);
-          fputs (escaped, stdout);
-          g_free (escaped);
-#ifdef PAH_DEBUG
-          fprintf (stderr, "polkit-agent-helper-1: writing newline to stdout\n");
-#endif /* PAH_DEBUG */
-          fputc ('\n', stdout);
-#ifdef PAH_DEBUG
-          fprintf (stderr, "polkit-agent-helper-1: flushing stdout\n");
-#endif /* PAH_DEBUG */
-          fflush (stdout);
+          send_to_helper ("PAM_PROMPT_ECHO_ON", msg[i]->msg);
 
+        conv1:
           if (fgets (buf, sizeof buf, stdin) == NULL)
             goto error;
 
@@ -285,17 +278,11 @@ conversation_function (int n, const struct pam_message **msg, struct pam_respons
           break;
 
         case PAM_ERROR_MSG:
-          fprintf (stdout, "PAM_ERROR_MSG ");
-          goto conv2;
+          send_to_helper ("PAM_ERROR_MSG", msg[i]->msg);
+          break;
 
         case PAM_TEXT_INFO:
-          fprintf (stdout, "PAM_TEXT_INFO ");
-        conv2:
-          fputs (msg[i]->msg, stdout);
-          if (strlen (msg[i]->msg) > 0 &&
-              msg[i]->msg[strlen (msg[i]->msg) - 1] != '\n')
-            fputc ('\n', stdout);
-          fflush (stdout);
+          send_to_helper ("PAM_TEXT_INFO", msg[i]->msg);
           break;
 
         default:
@@ -316,6 +303,7 @@ error:
       }
     }
   memset (aresp, 0, n * sizeof *aresp);
+  free (aresp);
   *resp = NULL;
   return PAM_CONV_ERR;
 }

@@ -24,134 +24,165 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <termios.h>
+#include <glib/gi18n.h>
 #include <polkit/polkit.h>
 #define POLKIT_AGENT_I_KNOW_API_IS_SUBJECT_TO_CHANGE
 #include <polkitagent/polkitagent.h>
 
-static void
-usage (int argc, char *argv[])
-{
-  GError *error;
 
-  error = NULL;
-  if (!g_spawn_command_line_sync ("man pkttyagent",
-                                  NULL,
-                                  NULL,
-                                  NULL,
-                                  &error))
-    {
-      g_printerr ("Cannot show manual page: %s (%s, %d)\n",
-                  error->message, g_quark_to_string (error->domain), error->code);
-      g_error_free (error);
-    }
+static volatile sig_atomic_t tty_flags_saved;
+static volatile sig_atomic_t tty_flags_changed;
+struct termios ts;
+FILE *tty = NULL;
+struct sigaction savesigterm, savesigint, savesigtstp;
+
+
+static void tty_handler(int signal)
+{
+  switch (signal)
+  {
+    case SIGTERM:
+      sigaction (SIGTERM, &savesigterm, NULL);
+      break;
+    case SIGINT:
+      sigaction (SIGINT, &savesigint, NULL);
+      break;
+    case SIGTSTP:
+      sigaction (SIGTSTP, &savesigtstp, NULL);
+      break;
+  }
+
+  if (tty_flags_saved && tty_flags_changed)
+  {
+    tcsetattr (fileno (tty), TCSADRAIN, &ts);
+  }
+
+  kill(getpid(), signal);
+}
+
+
+static void tty_attrs_changed(PolkitAgentListener *listener G_GNUC_UNUSED,
+                              gboolean changed,
+                              gpointer user_data G_GNUC_UNUSED)
+{
+  tty_flags_changed = changed;
 }
 
 
 int
 main (int argc, char *argv[])
 {
-  gboolean opt_show_help = FALSE;
   gboolean opt_show_version = FALSE;
   gboolean opt_fallback = FALSE;
+  gchar *opt_process = NULL;
+  gchar *opt_system_bus_name = NULL;
+  gint opt_notify_fd = -1;
+  GOptionEntry options[] =
+    {
+      {
+	"fallback", 0, 0, G_OPTION_ARG_NONE, &opt_fallback,
+	N_("Don't replace existing agent if any"), NULL
+      },
+      {
+	"notify-fd", 0, 0, G_OPTION_ARG_INT, &opt_notify_fd,
+	N_("Close FD when the agent is registered"), N_("FD")
+      },
+      {
+	"process", 'p', 0, G_OPTION_ARG_STRING, &opt_process,
+	N_("Register the agent for the specified process"),
+	N_("PID[,START_TIME]")
+      },
+      {
+	"system-bus-name", 's', 0, G_OPTION_ARG_STRING, &opt_system_bus_name,
+	N_("Register the agent for the owner of BUS_NAME"), N_("BUS_NAME")
+      },
+      {
+	"version", 0, 0, G_OPTION_ARG_NONE, &opt_show_version,
+	N_("Show version"), NULL
+      },
+      { NULL, 0, 0, 0, NULL, NULL, NULL }
+    };
+  GOptionContext *context;
+  gchar *s;
   PolkitAuthority *authority = NULL;
   PolkitSubject *subject = NULL;
   gpointer local_agent_handle = NULL;
   PolkitAgentListener *listener = NULL;
-  GVariant *options = NULL;
+  GVariant *listener_options = NULL;
   GError *error;
   GMainLoop *loop = NULL;
-  guint n;
   guint ret = 126;
-  gint notify_fd = -1;
   GVariantBuilder builder;
+  struct sigaction sa;
+  const char *tty_name = NULL;
 
-  g_type_init ();
+  /* Disable remote file access from GIO. */
+  setenv ("GIO_USE_VFS", "local", 1);
 
-  for (n = 1; n < (guint) argc; n++)
+  error = NULL;
+  context = g_option_context_new ("");
+  s = g_strdup_printf (_("Report bugs to: %s\n"
+			 "%s home page: <%s>"), PACKAGE_BUGREPORT,
+		       PACKAGE_NAME, PACKAGE_URL);
+  g_option_context_set_description (context, s);
+  g_free (s);
+  g_option_context_add_main_entries (context, options, GETTEXT_PACKAGE);
+  if (!g_option_context_parse (context, &argc, &argv, &error))
     {
-      if (g_strcmp0 (argv[n], "--help") == 0)
-        {
-          opt_show_help = TRUE;
-        }
-      else if (g_strcmp0 (argv[n], "--version") == 0)
-        {
-          opt_show_version = TRUE;
-        }
-      else if (g_strcmp0 (argv[n], "--fallback") == 0)
-        {
-          opt_fallback = TRUE;
-        }
-      else if (g_strcmp0 (argv[n], "--notify-fd") == 0)
-        {
-          n++;
-          if (n >= (guint) argc)
-            {
-              usage (argc, argv);
-              goto out;
-            }
-
-          if (sscanf (argv[n], "%i", &notify_fd) != 1)
-            {
-              usage (argc, argv);
-              goto out;
-            }
-        }
-      else if (g_strcmp0 (argv[n], "--process") == 0 || g_strcmp0 (argv[n], "-p") == 0)
-        {
-          gint pid;
-          guint64 pid_start_time;
-
-          n++;
-          if (n >= (guint) argc)
-            {
-              usage (argc, argv);
-              goto out;
-            }
-
-          if (sscanf (argv[n], "%i,%" G_GUINT64_FORMAT, &pid, &pid_start_time) == 2)
-            {
-              subject = polkit_unix_process_new_full (pid, pid_start_time);
-            }
-          else if (sscanf (argv[n], "%i", &pid) == 1)
-            {
-              subject = polkit_unix_process_new (pid);
-            }
-          else
-            {
-              usage (argc, argv);
-              goto out;
-            }
-        }
-      else if (g_strcmp0 (argv[n], "--system-bus-name") == 0 || g_strcmp0 (argv[n], "-s") == 0)
-        {
-          n++;
-          if (n >= (guint) argc)
-            {
-              usage (argc, argv);
-              goto out;
-            }
-
-          subject = polkit_system_bus_name_new (argv[n]);
-        }
-      else
-        {
-          break;
-        }
-    }
-
-  if (opt_show_help)
-    {
-      usage (argc, argv);
-      ret = 0;
+      g_printerr ("%s: %s\n", g_get_prgname (), error->message);
+      g_error_free (error);
       goto out;
     }
-  else if (opt_show_version)
+  if (argc > 1)
+    {
+      g_printerr (_("%s: Unexpected argument `%s'\n"), g_get_prgname (),
+		  argv[1]);
+      goto out;
+    }
+
+  if (opt_show_version)
     {
       g_print ("pkttyagent version %s\n", PACKAGE_VERSION);
       ret = 0;
       goto out;
     }
 
+  if (opt_process != NULL && opt_system_bus_name != NULL)
+    {
+      g_printerr (_("%s: Options --process and --system-bus-name are mutually exclusive\n"),
+                  g_get_prgname());
+      goto out;
+    }
+  if (opt_process != NULL)
+    {
+      gint pid;
+      guint64 pid_start_time;
+
+      if (sscanf (opt_process, "%i,%" G_GUINT64_FORMAT, &pid, &pid_start_time)
+	  == 2)
+	{
+	  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+          subject = polkit_unix_process_new_full (pid, pid_start_time);
+	  G_GNUC_END_IGNORE_DEPRECATIONS
+	}
+      else if (sscanf (opt_process, "%i", &pid) == 1)
+	{
+	  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+	  subject = polkit_unix_process_new (pid);
+	  G_GNUC_END_IGNORE_DEPRECATIONS
+	}
+      else
+	{
+	  g_printerr (_("%s: Invalid process specifier `%s'\n"),
+		      g_get_prgname (), opt_process);
+	  goto out;
+	}
+    }
+  if (opt_system_bus_name != NULL)
+    subject = polkit_system_bus_name_new (opt_system_bus_name);
   /* Use parent process, if no subject has been specified */
   if (subject == NULL)
     {
@@ -176,11 +207,11 @@ main (int argc, char *argv[])
       g_assert (polkit_unix_process_get_start_time (POLKIT_UNIX_PROCESS (subject)) > 0);
     }
 
-  error = NULL;
   authority = polkit_authority_get_sync (NULL /* GCancellable* */, &error);
   if (authority == NULL)
     {
-      g_printerr ("Error getting authority: %s (%s, %d)\n",
+      g_printerr ("Authorization not available. Check if polkit service is running or see debug message for more information.\n");
+      g_debug ("Error getting authority: %s (%s, %d)\n",
                   error->message, g_quark_to_string (error->domain), error->code);
       g_error_free (error);
       ret = 127;
@@ -191,7 +222,7 @@ main (int argc, char *argv[])
     {
       g_variant_builder_init (&builder, G_VARIANT_TYPE_VARDICT);
       g_variant_builder_add (&builder, "{sv}", "fallback", g_variant_new_boolean (TRUE));
-      options = g_variant_builder_end (&builder);
+      listener_options = g_variant_builder_end (&builder);
     }
 
   error = NULL;
@@ -205,14 +236,17 @@ main (int argc, char *argv[])
       ret = 127;
       goto out;
     }
+  g_signal_connect(G_OBJECT(listener), "tty_attrs_changed",
+                   G_CALLBACK(tty_attrs_changed), NULL);
+
   local_agent_handle = polkit_agent_listener_register_with_options (listener,
                                                                     POLKIT_AGENT_REGISTER_FLAGS_RUN_IN_THREAD,
                                                                     subject,
                                                                     NULL, /* object_path */
-                                                                    options,
+                                                                    listener_options,
                                                                     NULL, /* GCancellable */
                                                                     &error);
-  options = NULL; /* consumed */
+  listener_options = NULL; /* consumed */
   g_object_unref (listener);
   if (local_agent_handle == NULL)
     {
@@ -222,14 +256,41 @@ main (int argc, char *argv[])
       goto out;
     }
 
-  if (notify_fd != -1)
+  if (opt_notify_fd != -1)
     {
-      if (close (notify_fd) != 0)
+      if (close (opt_notify_fd) != 0)
         {
-          g_printerr ("Error closing notify-fd %d: %m\n", notify_fd);
+          g_printerr ("Error closing notify-fd %d: %m\n", opt_notify_fd);
           goto out;
         }
     }
+
+/* Bash leaves tty echo disabled if SIGINT/SIGTERM comes to polkitagenttextlistener.c::on_request(),
+   but due to threading the handlers cannot take care of the signal there.
+   Though if controlling terminal cannot be found, the world won't stop spinning.
+*/
+  tty_name = ctermid(NULL);
+  if (tty_name != NULL)
+  {
+    tty = fopen(tty_name, "r+");
+  }
+
+  if (tty != NULL && !tcgetattr (fileno (tty), &ts))
+  {
+	  tty_flags_saved = TRUE;
+  }
+
+  memset (&sa, 0, sizeof (sa));
+  sa.sa_handler = &tty_handler;
+/* If tty_handler() resets terminal while pkttyagent is run in background job,
+   the process gets stopped by SIGTTOU. This impacts systemctl, hence it must
+   be blocked for a while and then the process gets killed anyway.
+ */
+  sigemptyset(&sa.sa_mask);
+  sigaddset(&sa.sa_mask, SIGTTOU);
+  sigaction (SIGTERM, &sa, &savesigterm);
+  sigaction (SIGINT, &sa, &savesigint);
+  sigaction (SIGTSTP, &sa, &savesigtstp);
 
   loop = g_main_loop_new (NULL, FALSE);
   g_main_loop_run (loop);
@@ -241,14 +302,18 @@ main (int argc, char *argv[])
   if (local_agent_handle != NULL)
     polkit_agent_listener_unregister (local_agent_handle);
 
-  if (options != NULL)
-    g_variant_unref (options);
+  if (listener_options != NULL)
+    g_variant_unref (listener_options);
 
   if (subject != NULL)
     g_object_unref (subject);
 
   if (authority != NULL)
     g_object_unref (authority);
+
+  g_free (opt_process);
+  g_free (opt_system_bus_name);
+  g_option_context_free (context);
 
   return ret;
 }
