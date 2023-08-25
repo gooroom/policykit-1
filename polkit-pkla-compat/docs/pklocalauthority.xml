@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
+               "http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd" []>
+<refentry>
+  <refentryinfo>
+    <title>pklocalauthority</title>
+    <date>May 2013</date>
+    <productname>polkit-pkla-compat</productname>
+    <author>
+      <firstname>Miloslav</firstname><surname>Trmač</surname>
+      <contrib>Author</contrib>
+      <email>mitr@redhat.com</email>
+    </author>
+  </refentryinfo>
+
+  <refmeta>
+    <refentrytitle>pklocalauthority</refentrytitle>
+    <manvolnum>8</manvolnum>
+    <refmiscinfo class="version"></refmiscinfo>
+  </refmeta>
+
+  <refnamediv>
+    <refname>pklocalauthority</refname>
+    <refpurpose>polkit Local Authority Compatibility</refpurpose>
+  </refnamediv>
+
+  <refsect1>
+    <title>DESCRIPTION</title>
+    <para>
+      The polkit Local Authority no longer exists.  Existing configuration
+      files are honored; see
+      <citerefentry>
+	<refentrytitle>pkla-admin-identities</refentrytitle>
+	<manvolnum>8</manvolnum>
+      </citerefentry>
+      and
+      <citerefentry>
+	<refentrytitle>pkla-check-authorization</refentrytitle>
+	<manvolnum>8</manvolnum>
+      </citerefentry>
+      for description of the configuration format.
+    </para>
+    <para>
+      Unlike the original Local Authority implementation, <emphasis>ReturnValue</emphasis> keys are ignored because
+      <citerefentry>
+	<refentrytitle>polkit</refentrytitle>
+	<manvolnum>8</manvolnum>
+      </citerefentry>
+      no longer supports the functionality.
+    </para>
+  </refsect1>
+
+  <refsect1 id="pklocalauthority-see-also">
+    <title>SEE ALSO</title>
+    <para>
+      <citerefentry>
+        <refentrytitle>pkla-admin-identities</refentrytitle>
+	<manvolnum>8</manvolnum>
+      </citerefentry>,
+      <citerefentry>
+        <refentrytitle>pkla-check-authorization</refentrytitle>
+	<manvolnum>8</manvolnum>
+      </citerefentry>,
+      <citerefentry>
+        <refentrytitle>polkit</refentrytitle><manvolnum>8</manvolnum>
+      </citerefentry>
+    </para>
+  </refsect1>
+</refentry>
