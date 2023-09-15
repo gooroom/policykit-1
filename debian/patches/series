@@ -2,3 +2,4 @@
 08_chdir_root.patch
 debian/01_pam_polkit.patch
 debian/50-default.rules-Replace-wheel-group-with-sudo-group.patch
+gooroom/gooroom-01-details-insert-implicit-authorization.patch
