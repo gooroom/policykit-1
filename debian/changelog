@@ -1,3 +1,10 @@
+policykit-1 (122-3+grm4u1) unstable; urgency=medium
+
+  [ cjheo ]
+  * [2315ea32] Rebased on gooroom-4.0
+
+ -- Gooroom Autobuilder <jenkins@gooroom.kr>  Tue, 05 Mar 2024 11:56:45 +0900
+
 policykit-1 (122-3) unstable; urgency=medium
 
   * d/polkitd.postinst: Stop polkitd before changing home directory.
