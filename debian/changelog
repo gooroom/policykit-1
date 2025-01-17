@@ -1,3 +1,160 @@
+policykit-1 (126-2) unstable; urgency=medium
+
+  * Remove obsolete /var/lib/polkit-1/ directory on upgrades
+
+ -- Michael Biebl <biebl@debian.org>  Fri, 17 Jan 2025 20:37:46 +0100
+
+policykit-1 (126-1) unstable; urgency=medium
+
+  * Update upstream source from tag 'upstream/126'
+  * Drop 08_chdir_root.patch, merged upstream
+  * d/rules: use execute_before instead of override
+  * polkitd: drop setting permissions for legacy /var/ directory
+  * polkitd: drop special handling for polkitd-pkla, dropped
+  * Drop gettext patch, merged upstream, and enable it in meson
+  * Drop PAM patch and set os_type to Debian, which enables the same
+    config
+  * Drop sudo group patch and use build config instead
+  * Drop test-namespace-skip.patch, merged upstream
+  * Drop Lintian source override, no longer needed
+
+ -- Luca Boccassi <bluca@debian.org>  Mon, 13 Jan 2025 17:36:43 +0000
+
+policykit-1 (125-2) unstable; urgency=medium
+
+  * Mark policykit-1-doc as MA foreign
+  * Add patch to gracefully skip unit tests without permission to unshare
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 08 Aug 2024 17:54:02 +0100
+
+policykit-1 (125-1) unstable; urgency=medium
+
+  * Update upstream source from tag 'upstream/125'
+  * Drop patches merged upstream
+  * Drop patch to remove PrivateNetwork=, no longer needed
+  * Adjust Meson option for new syntax
+  * Drop Debian-specific tmpfiles.d and use upstream's
+  * Enable ELF metadata stamping
+  * Update d/copyright, mocklibc has been dropped upstream
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 08 Aug 2024 15:22:22 +0100
+
+policykit-1 (124-3) unstable; urgency=medium
+
+  * Drop transitional package policykit-1 (Closes: #1025540)
+  * Drop fallback for /usr/libexec/polkitd in postinst (Closes: #1070448)
+  * fix: pkexec fails with
+    "GDBus.Error:org.freedesktop.PolicyKit1.Error.Failed: No session for
+    cookie"
+    Patch cherry-picked from upstream Git. (Closes: #1068652)
+  * Drop support for the pkla backend.
+    Drop the legacy polkitd-pkla package.
+    It is no longer maintained upstream and was only meant as a temporary
+    measure to ease the migration from .pkla to JS based rules files.
+  * Bump Standards-Version to 4.7.0
+
+ -- Michael Biebl <biebl@debian.org>  Wed, 03 Jul 2024 23:03:15 +0200
+
+policykit-1 (124-2) unstable; urgency=medium
+
+  [ Michael Biebl ]
+  * Drop obsolete lintian override
+  * Build-depend on pkgconf instead of pkg-config
+
+  [ Simon McVittie ]
+  * d/control: Change policykit-1 dependencies from "equal" to "at least"
+    Having transitional packages depend on package (>= x) instead
+    of package (= x) means that the transitional package can remain
+    installed on user systems even after it has been obsoleted and
+    removed, if it's required by third-party software.
+  * d/p/Turn-local-modifications-of-mocklibc-into-patches-and-app.patch:
+    Add patch to fix FTBFS caused by an implicit declaration.
+    Thanks to Michael Biebl (Closes: #1066531)
+  * d/.gitignore: Add
+  * d/control: Explicitly build-depend on gir1.2-gio-2.0-dev
+  * d/control: Add ${gir:Depends}, ${gir:Provides} to all relevant packages
+  * d/control: Stop build-depending on libgirepository1.0-dev.
+    This is unnecessary now that we depend on gir1.2-gio-2.0-dev and
+    a new enough gobject-introspection.
+  * d/rules: Enable cross-compilation of gobject-introspection data
+
+ -- Simon McVittie <smcv@debian.org>  Sat, 16 Mar 2024 19:22:27 +0000
+
+policykit-1 (124-1) unstable; urgency=medium
+
+  * Migrate upstream metadata and sources to Github
+  * New upstream release
+  * Upstream now installs pam.d snippet directly in /usr/lib, drop
+    redirection
+  * Upstream now ships sysusers.d, drop local copy
+  * Bump copyright year ranges in d/copyright
+  * Build-depend on systemd-dev and use pkg-config instead of hard-coding
+    unit installation directory
+  * Update symbols file for 124
+  * Override Lintian warning about redundant globbing
+  * Drop d/u/signing-key.asc, releases no longer signed
+  * Add myself to Uploaders
+
+ -- Luca Boccassi <bluca@debian.org>  Sun, 21 Jan 2024 10:42:09 +0000
+
+policykit-1 (123-3) unstable; urgency=medium
+
+  * d/control: Build-depend on a debhelper supporting system units in /usr/lib.
+    This avoids making it too easy to backport a version that won't work
+    correctly. Thanks to Michael Biebl
+
+ -- Simon McVittie <smcv@debian.org>  Fri, 20 Oct 2023 09:23:16 +0100
+
+policykit-1 (123-2) unstable; urgency=medium
+
+  * d/clean: Remove unpacked subprojects/mocklibc-1.0/.
+    This addresses FTBFS-twice-in-a-row. The subproject is provided in the
+    upstream tarball as source code packed in a zip file, rather than as
+    unpacked source. (Closes: #1047511)
+  * Install the systemd unit in /usr/lib/systemd/system.
+    This was allowed by Technical Committee resolution #1053901. polkit
+    has not usually been backported, so it doesn't seem important to make
+    backports trivial for this particular package.
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 19 Oct 2023 09:20:30 +0100
+
+policykit-1 (123-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update directory permissions to match upstream hardening
+    - /etc/polkit-1/rules.d: was 0700 polkitd:root, now 0750 root:polkitd
+      so polkitd cannot modify it
+    - /var/lib/polkit-1: same as /etc/polkit-1/rules.d
+    - /usr/share/polkit-1/rules.d: was 0700 polkitd:root, now 0755
+      root:root since everything in that directory comes from a package
+      anyway
+  * d/polkitd.postinst: Clean up /var/lib/polkit-1/.cache on upgrades,
+    now that polkitd will not re-create it (Closes: #855083)
+  * d/tests: Depend on polkitd instead of policykit-1
+  * d/tests: Rename cli test to polkitd
+  * d/tests: Add a test for pkexec
+  * d/p/debian/Don-t-use-PrivateNetwork-yes-for-the-systemd-unit.patch:
+    Disable PrivateNetwork=yes for now. This would be good to have,
+    but it causes autopkgtest failures under lxc. (Mitigates: #1042880)
+  * d/control: Stop recommending polkitd-pkla in policykit-1.
+    This is a step towards removing the policykit-1 transitional package
+    entirely: it was included in Debian 12 and Ubuntu 22.04, so it has
+    served its purpose and should be removed soon.
+
+ -- Simon McVittie <smcv@debian.org>  Wed, 02 Aug 2023 12:49:21 +0100
+
+policykit-1 (122-4) unstable; urgency=medium
+
+  * d/control: Remove transitional polkitd-javascript package.
+    This package was released in bookworm, and nothing in Debian depends
+    on it. It was only relevant for users of certain polkit releases in
+    experimental.
+  * d/*.install: Move gettext extensions into libpolkit-gobject-1-dev.
+    These are generally only needed when building other packages.
+    (Closes: #955204)
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 12 Jun 2023 20:09:41 +0100
+
 policykit-1 (122-3) unstable; urgency=medium
 
   * d/polkitd.postinst: Stop polkitd before changing home directory.

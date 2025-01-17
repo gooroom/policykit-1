@@ -1,7 +1,11 @@
-Tests: cli
-Depends: policykit-1
+Tests: polkitd
+Depends: polkitd
 Restrictions: isolation-container, skippable
 
-Tests: cli-root
-Depends: policykit-1
+Tests: polkitd-root
+Depends: polkitd
 Restrictions: isolation-container, needs-root, skippable
+
+Tests: pkexec
+Depends: pkexec
+Restrictions: isolation-container, needs-sudo, skippable

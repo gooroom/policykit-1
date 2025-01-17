@@ -4,6 +4,7 @@
 export DEB_BUILD_MAINT_OPTIONS = hardening=+bindnow
 
 include /usr/share/dpkg/default.mk
+include /usr/share/debhelper/dh_package_notes/package-notes.mk
 
 built_binaries := $(shell dh_listpackages)
 
@@ -23,34 +24,25 @@ configure_flags += -Dgtk_doc=true
 endif
 
 ifeq (linux,$(DEB_HOST_ARCH_OS))
-configure_flags += -Dsession_tracking=libsystemd-login
+configure_flags += -Dsession_tracking=logind
 else
 configure_flags += -Dsession_tracking=ConsoleKit
 endif
 
-override_dh_auto_clean:
-	dh_auto_clean
-	dh_auto_clean --sourcedirectory=polkit-pkla-compat
+ifneq ($(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
+configure_flags += --cross-file=$(DEB_HOST_GNU_TYPE)-gobject-introspection.ini
+endif
 
 override_dh_auto_configure:
 	dh_auto_configure -- \
 		-Dexamples=false \
 		-Dintrospection=true \
 		-Dman=true \
-		-Dsystemdsystemunitdir=/lib/systemd/system \
 		-Dtests=true \
+		-Dgettext=true \
+		-Dos_type=debian \
+		-Dprivileged_group=sudo \
 		$(configure_flags)
-	dh_auto_configure \
-		--sourcedirectory=polkit-pkla-compat \
-		-- \
-		--bindir=/usr/sbin \
-		POLKIT_CFLAGS="-I$(CURDIR)/src -I$(CURDIR)/obj-$(DEB_HOST_GNU_TYPE)/src" \
-		POLKIT_LIBS="$(CURDIR)/obj-$(DEB_HOST_GNU_TYPE)/src/polkit/libpolkit-gobject-1.so" \
-		$(compat_configure_flags)
-
-override_dh_auto_build:
-	dh_auto_build
-	dh_auto_build --sourcedirectory=polkit-pkla-compat
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
@@ -61,26 +53,14 @@ ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 		dh_auto_test \
 		-- \
 		$(NULL)
-	dbus-run-session -- \
-		sh -euc 'export DBUS_SYSTEM_BUS_ADDRESS="$$DBUS_SESSION_BUS_ADDRESS"; exec "$$@"' \
-		sh \
-		env LD_LIBRARY_PATH="$(CURDIR)/obj-$(DEB_HOST_GNU_TYPE)/src/polkit" \
-		dh_auto_test --sourcedirectory=polkit-pkla-compat \
-		-- \
-		$(NULL)
 endif
 
-override_dh_auto_install:
-	dh_auto_install
-	dh_auto_install --sourcedirectory=polkit-pkla-compat
-
-override_dh_install:
+execute_before_dh_install:
 	# on Debian use sudo group; on Ubuntu, also allow the admin group for
 	# historical reasons
 	if dpkg-vendor --is ubuntu; then \
 		install -m644 debian/49-ubuntu-admin.rules debian/tmp/usr/share/polkit-1/rules.d/; \
 	fi
-	dh_install
 
 override_dh_installsystemd:
 	dh_installsystemd --no-start --restart-after-upgrade

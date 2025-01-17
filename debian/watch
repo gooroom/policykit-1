@@ -1,10 +1,3 @@
 version=4
-opts="dversionmangle=s/\+(ds|dfsg|compat)[0-9.]*$//, pgpmode=auto" \
-  https://gitlab.freedesktop.org/polkit/polkit/tags?sort=updated_desc \
-  archive/v?@ANY_VERSION@/polkit-v?\1@ARCHIVE_EXT@
-# Update the version in parentheses as needed to correspond to the version
-# of polkit-pkla-compat, in the unlikely event that there is ever another
-# release
-opts="filenamemangle=s/.*\///g, dversionmangle=s/\+(ds|dfsg|compat)[0-9.]*$//, component=polkit-pkla-compat" \
-https://releases.pagure.org/polkit-pkla-compat/ \
-  polkit-pkla-compat-(0\.1)@ARCHIVE_EXT@
+opts="dversionmangle=s/\+(ds|dfsg)[0-9.]*$//, filenamemangle=s/.+\/v?(\d\S*)(@ARCHIVE_EXT@)/policykit-1-$1$2/" \
+  https://github.com/polkit-org/polkit/tags .*/v?@ANY_VERSION@@ARCHIVE_EXT@
