@@ -49,7 +49,6 @@
  * be emitted with the @gained_authorization paramter set to %FALSE.
  */
 
-#include "config.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -67,7 +66,7 @@ _show_debug (void)
   static volatile gsize has_show_debug = 0;
   static gboolean show_debug_value = FALSE;
 
-  if (g_once_init_enter (&has_show_debug))
+  if (g_once_init_enter ((gsize*) &has_show_debug))
     {
       show_debug_value = (g_getenv ("POLKIT_DEBUG") != NULL);
       g_once_init_leave (&has_show_debug, 1);
@@ -540,7 +539,7 @@ polkit_agent_session_response (PolkitAgentSession *session,
 
   response_len = strlen (response);
 
-  add_newline = (response[response_len] != '\n');
+  add_newline = (response_len == 0 || response[response_len - 1] != '\n');
 
   (void) g_output_stream_write_all (session->child_stdin, response, response_len, NULL, NULL, NULL);
   if (add_newline)

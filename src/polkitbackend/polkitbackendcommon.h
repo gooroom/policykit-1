@@ -26,7 +26,6 @@
 #ifndef __POLKIT_BACKEND_COMMON_H
 #define __POLKIT_BACKEND_COMMON_H
 
-#include "config.h"
 #include <sys/wait.h>
 #include <errno.h>
 #include <pwd.h>
@@ -37,6 +36,7 @@
 #include <netdb.h>
 #endif
 #include <string.h>
+#include <gio/gunixfdlist.h>
 #include <glib/gstdio.h>
 #include <locale.h>
 #include <glib/gi18n-lib.h> //here, all things glib via glib.h (including -> gspawn.h)
@@ -150,6 +150,9 @@ PolkitImplicitAuthorization polkit_backend_common_js_authority_check_authorizati
                                                                                          const gchar                       *action_id,
                                                                                          PolkitDetails                     *details,
                                                                                          PolkitImplicitAuthorization        implicit);
+void polkit_backend_common_pidfd_to_systemd_unit (gint      pid,
+                                                  gchar   **ret_unit,
+                                                  gboolean *ret_no_new_privs);
 #ifdef __cplusplus
 }
 #endif

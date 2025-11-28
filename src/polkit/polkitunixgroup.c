@@ -19,10 +19,6 @@
  * Author: David Zeuthen <davidz@redhat.com>
  */
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
-#endif
-
 #include <string.h>
 #include <grp.h>
 #include <errno.h>
@@ -203,7 +199,7 @@ polkit_unix_group_new (gint gid)
  * Creates a new #PolkitUnixGroup object for a group with the group name
  * @name.
  *
- * Returns: (transfer full): (allow-none): A #PolkitUnixGroup object or %NULL if @error
+ * Returns: (transfer full) (allow-none): A #PolkitUnixGroup object or %NULL if @error
  * is set.
  */
 PolkitIdentity *

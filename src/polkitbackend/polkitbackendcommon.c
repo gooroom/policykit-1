@@ -172,13 +172,14 @@ utils_child_watch_cb (GPid     pid,
   if (g_io_channel_read_to_end (data->child_stdout_channel, &buf, &buf_size, NULL) == G_IO_STATUS_NORMAL)
     {
       g_string_append_len (data->child_stdout, buf, buf_size);
-      g_free (buf);
     }
+  g_free (buf);
+
   if (g_io_channel_read_to_end (data->child_stderr_channel, &buf, &buf_size, NULL) == G_IO_STATUS_NORMAL)
     {
       g_string_append_len (data->child_stderr, buf, buf_size);
-      g_free (buf);
     }
+  g_free (buf);
 
   data->exit_status = status;
 
@@ -348,6 +349,7 @@ polkit_backend_common_on_dir_monitor_changed (GFileMonitor     *monitor,
            event_type == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT))
         {
           polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                        LOG_LEVEL_NOTICE,
                                         "Reloading rules");
           polkit_backend_common_reload_scripts (authority);
         }
@@ -527,4 +529,140 @@ polkit_backend_common_spawn_cb (GObject       *source_object,
   SpawnData *data = (SpawnData *)user_data;
   data->res = (GAsyncResult*)g_object_ref (res);
   g_main_loop_quit (data->loop);
+}
+
+void
+polkit_backend_common_pidfd_to_systemd_unit (gint      pidfd,
+                                             gchar   **ret_unit,
+                                             gboolean *ret_no_new_privs)
+{
+  static int cached_has_pidfd_support = -1;
+  GError *error = NULL;
+  GDBusConnection *connection = NULL;
+  GMainContext *tmp_context = NULL;
+  GVariant *result = NULL, *no_new_privs_result = NULL, *no_new_privis_value;
+  GUnixFDList *fd_list = NULL;
+  const char *unit_path, *unit;
+  int fd_id;
+
+  /* Try to lookup using a PIDFD, so that we do not have issues with PIDs being
+   * recycled under our nose. For that we need both a kernel that supports the
+   * PIDFD syscalls (no wrapper from glibc, so need to call it directly) and a
+   * version of systemd with the new GetUnitByPIDFD method. If either are not
+   * available, then return nothing, as we don't want to be open to PID recycle
+   * attacks.
+   */
+
+  g_assert (ret_unit != NULL);
+  g_assert (ret_no_new_privs != NULL);
+
+  if (pidfd < 0 || cached_has_pidfd_support == 0)
+    return;
+
+  connection = g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, &error);
+  if (connection == NULL)
+    {
+      g_warning ("Error getting system bus: %s", error->message);
+      goto out;
+    }
+
+  tmp_context = g_main_context_new ();
+  g_main_context_push_thread_default (tmp_context);
+
+  fd_list = g_unix_fd_list_new ();
+  if (fd_list == NULL)
+    goto out;
+
+  fd_id = g_unix_fd_list_append (fd_list, pidfd, &error);
+  if (fd_id < 0)
+    {
+      g_warning ("Error appending PID FD to fd list: %s", error->message);
+      goto out;
+    }
+
+  result = g_dbus_connection_call_with_unix_fd_list_sync (connection,
+        "org.freedesktop.systemd1",         /* name */
+        "/org/freedesktop/systemd1",        /* object path */
+        "org.freedesktop.systemd1.Manager", /* interface name */
+        "GetUnitByPIDFD",                   /* method */
+        g_variant_new ("(h)", fd_id),
+        G_VARIANT_TYPE ("(osay)"),
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        fd_list,
+        NULL,
+        NULL,
+        &error);
+
+  if (result == NULL)
+    {
+      if (g_error_matches (error, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD))
+        cached_has_pidfd_support = 0;
+
+      g_warning ("Error calling GetUnitByPIDFD: %s", error->message);
+      goto out;
+    }
+
+  g_variant_get (result, "(&o&say)", &unit_path, &unit, NULL);
+  if (unit == NULL)
+    goto out;
+
+  /* Check for NoNewPrivileges property being set on the unit via D-Bus, and
+   * return if it is not. This protects against PID changes, as if unset the
+   * unit could use a setuid binary. It is only valid for service units. */
+  if (g_str_has_suffix (unit, ".service"))
+    {
+      no_new_privs_result = g_dbus_connection_call_sync (connection,
+            "org.freedesktop.systemd1",         /* name */
+            unit_path,                          /* object path */
+            "org.freedesktop.DBus.Properties",  /* interface name */
+            "Get",                              /* method */
+            g_variant_new ("(ss)", "org.freedesktop.systemd1.Service", "NoNewPrivileges"),
+            G_VARIANT_TYPE ("(v)"),
+            G_DBUS_CALL_FLAGS_NONE,
+            -1,
+            NULL,
+            &error);
+
+      if (no_new_privs_result == NULL)
+        {
+          g_warning ("Error calling Get on NoNewPrivileges property for unit %s: %s", unit, error->message);
+          goto out;
+        }
+
+      g_variant_get (no_new_privs_result, "(v)", &no_new_privis_value);
+      if (no_new_privis_value == NULL)
+        {
+          g_warning ("Error getting value for NoNewPrivileges property for unit %s", unit);
+          goto out;
+        }
+
+     *ret_no_new_privs = g_variant_get_boolean (no_new_privis_value);
+    }
+  else
+    *ret_no_new_privs = FALSE;
+
+  *ret_unit = strdup (unit);
+  if (!*ret_unit)
+    {
+      g_warning ("Failed to allocate memory for systemd unit ID");
+      goto out;
+    }
+
+ out:
+  if (tmp_context)
+    {
+      g_main_context_pop_thread_default (tmp_context);
+      g_main_context_unref (tmp_context);
+    }
+  if (connection != NULL)
+    g_object_unref (connection);
+  if (result != NULL)
+    g_variant_unref (result);
+  if (no_new_privs_result != NULL)
+    g_variant_unref (no_new_privs_result);
+  if (fd_list != NULL)
+    g_object_unref (fd_list);
+  if (error)
+    g_error_free (error);
 }

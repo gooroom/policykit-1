@@ -17,15 +17,14 @@ def destdir_path(p):
         return os.path.join(prefix, p)
 
 bindir = destdir_path(sys.argv[1])
-pkgdatadir = destdir_path(sys.argv[2])
-pkglibdir = destdir_path(sys.argv[3])
-pkgsysconfdir = destdir_path(sys.argv[4])
-polkitd_user = sys.argv[5]
+pkglibdir = destdir_path(sys.argv[2])
+pkgsysconfdir = destdir_path(sys.argv[3])
+polkitd_user = sys.argv[4]
 
 try:
-    polkitd_uid = pwd.getpwnam(polkitd_user).pw_uid
+    polkitd_gid = pwd.getpwnam(polkitd_user).pw_gid
 except KeyError:
-    polkitd_uid = None
+    polkitd_gid = None
 
 dst = os.path.join(bindir, 'pkexec')
 
@@ -40,22 +39,18 @@ else:
         )
     )
 
-dst_dirs = [
-    os.path.join(pkgsysconfdir, 'rules.d'),
-    os.path.join(pkgdatadir, 'rules.d')
-]
+dst = os.path.join(pkgsysconfdir, 'rules.d')
 
-for dst in dst_dirs:
-    if not os.path.exists(dst):
-        os.makedirs(dst, mode=0o700)
-        if os.geteuid() == 0 and polkitd_uid is not None:
-            os.chown(dst, polkitd_uid, -1)
-        else:
-            print(
-                'Owner of {} needs to be set to {} after installation'.format(
-                    dst, polkitd_user,
-                )
+if not os.path.exists(dst):
+    os.makedirs(dst, mode=0o750)
+    if os.geteuid() == 0 and polkitd_gid is not None:
+        os.chown(dst, 0, polkitd_gid)
+    else:
+        print(
+            'Owner of {} needs to be set to root and group to {} after installation'.format(
+                dst, polkitd_user,
             )
+        )
 
 # polkit-agent-helper-1 need to be setuid root because it's used to
 # authenticate not only the invoking user, but possibly also root
