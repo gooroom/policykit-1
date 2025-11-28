@@ -1,3 +1,9 @@
+policykit-1 (126-2+grm5~alpha1) UNRELEASED; urgency=medium
+
+  * Rebuild for gooroom-5.0
+
+ -- jongkyung.woo <jkwoo@gooroom.kr>  Fri, 28 Nov 2025 11:06:08 +0900
+
 policykit-1 (126-2) unstable; urgency=medium
 
   * Remove obsolete /var/lib/polkit-1/ directory on upgrades
