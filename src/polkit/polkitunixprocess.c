@@ -19,10 +19,6 @@
  * Author: David Zeuthen <davidz@redhat.com>
  */
 
-#ifdef HAVE_CONFIG_H
-#  include "config.h"
-#endif
-
 #include <sys/types.h>
 #ifdef HAVE_FREEBSD
 #include <sys/param.h>
@@ -36,6 +32,9 @@
 #ifdef HAVE_OPENBSD
 #include <sys/sysctl.h>
 #endif
+#ifdef HAVE_PIDFD_OPEN
+#include <sys/syscall.h>
+#endif /* HAVE_PIDFD_OPEN */
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -51,9 +50,15 @@
  * @title: PolkitUnixProcess
  * @short_description: Unix processs
  *
- * An object for representing a UNIX process.  NOTE: This object as
- * designed is now known broken; a mechanism to exploit a delay in
- * start time in the Linux kernel was identified.  Avoid
+ * An object for representing a UNIX process. In order to be reliable and
+ * race-free, this requires support for PID File Descriptors in the kernel,
+ * dbus-daemon/broker and systemd. With this functionality, we can reliably
+ * track processes without risking PID reuse and race conditions, and compare
+ * them.
+ *
+ * NOTE: If PID FDs are not available, this object will fall back to using
+ * PIDs, and this designed is now known broken; a mechanism to exploit a delay
+ * in start time in the Linux kernel was identified.  Avoid
  * calling polkit_subject_equal() to compare two processes.
  *
  * To uniquely identify processes, both the process id and the start
@@ -147,6 +152,9 @@ struct _PolkitUnixProcess
   gint pid;
   guint64 start_time;
   gint uid;
+  gint pidfd;
+  gboolean pidfd_is_safe;
+  GArray *gids;
 };
 
 struct _PolkitUnixProcessClass
@@ -159,7 +167,10 @@ enum
   PROP_0,
   PROP_PID,
   PROP_START_TIME,
-  PROP_UID
+  PROP_UID,
+  PROP_PIDFD,
+  PROP_PIDFD_IS_SAFE,
+  PROP_GIDS,
 };
 
 static void subject_iface_init (PolkitSubjectIface *subject_iface);
@@ -184,6 +195,7 @@ static void
 polkit_unix_process_init (PolkitUnixProcess *unix_process)
 {
   unix_process->uid = -1;
+  unix_process->pidfd = -1;
 }
 
 static void
@@ -197,11 +209,23 @@ polkit_unix_process_get_property (GObject    *object,
   switch (prop_id)
     {
     case PROP_PID:
-      g_value_set_int (value, unix_process->pid);
+      g_value_set_int (value, polkit_unix_process_get_pid (unix_process));
       break;
 
     case PROP_UID:
       g_value_set_int (value, unix_process->uid);
+      break;
+
+    case PROP_GIDS:
+      g_value_set_boxed (value, unix_process->gids);
+      break;
+
+    case PROP_PIDFD:
+      g_value_set_int (value, unix_process->pidfd);
+      break;
+
+    case PROP_PIDFD_IS_SAFE:
+      g_value_set_boolean (value, unix_process->pidfd_is_safe);
       break;
 
     case PROP_START_TIME:
@@ -232,6 +256,14 @@ polkit_unix_process_set_property (GObject      *object,
       polkit_unix_process_set_uid (unix_process, g_value_get_int (value));
       break;
 
+    case PROP_GIDS:
+      polkit_unix_process_set_gids (unix_process, g_value_get_boxed (value));
+      break;
+
+    case PROP_PIDFD:
+      polkit_unix_process_set_pidfd (unix_process, g_value_get_int (value));
+      break;
+
     case PROP_START_TIME:
       polkit_unix_process_set_start_time (unix_process, g_value_get_uint64 (value));
       break;
@@ -242,15 +274,87 @@ polkit_unix_process_set_property (GObject      *object,
     }
 }
 
+static gint
+polkit_unix_process_get_pid_from_pidfd (PolkitUnixProcess  *process,
+                                        GError            **error)
+{
+  gint result;
+  gchar *contents;
+  gchar **lines;
+  gchar filename[64];
+  guint n;
+
+  g_return_val_if_fail (POLKIT_IS_UNIX_PROCESS (process), -1);
+  g_return_val_if_fail (error == NULL || *error == NULL, -1);
+  g_return_val_if_fail (process->pidfd >= 0, -1);
+
+  result = -1;
+  lines = NULL;
+  contents = NULL;
+
+  g_snprintf (filename, sizeof filename, "/proc/self/fdinfo/%d", process->pidfd);
+  if (!g_file_get_contents (filename,
+                            &contents,
+                            NULL,
+                            error))
+    goto out;
+
+  lines = g_strsplit (contents, "\n", -1);
+  for (n = 0; lines != NULL && lines[n] != NULL; n++)
+    {
+      gint pid;
+      if (!g_str_has_prefix (lines[n], "Pid:"))
+        continue;
+      if (sscanf (lines[n] + 4, "%d", &pid) != 1)
+        g_set_error (error,
+                      POLKIT_ERROR,
+                      POLKIT_ERROR_FAILED,
+                      "Unexpected line `%s' in file %s",
+                      lines[n],
+                      filename);
+      else
+        result = pid;
+      goto out;
+    }
+
+  g_set_error (error,
+               POLKIT_ERROR,
+               POLKIT_ERROR_FAILED,
+               "Didn't find any line starting with `Pid:' in file %s",
+               filename);
+
+out:
+  g_strfreev (lines);
+  g_free (contents);
+  return result;
+}
+
 static void
 polkit_unix_process_constructed (GObject *object)
 {
   PolkitUnixProcess *process = POLKIT_UNIX_PROCESS (object);
 
-  /* sets start_time and uid in case they are unset */
+  /* sets pidfd, start_time and uid in case they are unset */
+
+  /* We didn't open it ourselves here, so we must have got it
+   * from D-Bus, mark it as safe to use */
+  if (process->pidfd >= 0)
+    process->pidfd_is_safe = TRUE;
+
+#ifdef HAVE_PIDFD_OPEN
+  if (process->pid > 0 && process->pidfd < 0)
+    {
+      gint pidfd = (int) syscall (SYS_pidfd_open, process->pid, 0);
+      if (pidfd >= 0)
+        {
+          process->pidfd = pidfd;
+          process->pid = 0;
+        }
+    }
+#endif /* HAVE_PIDFD_OPEN */
 
   if (process->start_time == 0)
-    process->start_time = get_start_time_for_pid (process->pid, NULL);
+    process->start_time = get_start_time_for_pid (polkit_unix_process_get_pid (process), NULL);
 
   if (process->uid == -1)
     {
@@ -269,6 +373,24 @@ polkit_unix_process_constructed (GObject *object)
 }
 
 static void
+polkit_unix_process_finalize (GObject *object)
+{
+  PolkitUnixProcess *process = POLKIT_UNIX_PROCESS (object);
+
+  if (process->pidfd >= 0)
+    {
+      close (process->pidfd);
+      process->pidfd = -1;
+    }
+
+  if (process->gids)
+    g_array_unref (process->gids);
+
+  if (G_OBJECT_CLASS (polkit_unix_process_parent_class)->finalize != NULL)
+    G_OBJECT_CLASS (polkit_unix_process_parent_class)->finalize (object);
+}
+
+static void
 polkit_unix_process_class_init (PolkitUnixProcessClass *klass)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
@@ -276,6 +398,7 @@ polkit_unix_process_class_init (PolkitUnixProcessClass *klass)
   gobject_class->get_property = polkit_unix_process_get_property;
   gobject_class->set_property = polkit_unix_process_set_property;
   gobject_class->constructed =  polkit_unix_process_constructed;
+  gobject_class->finalize =     polkit_unix_process_finalize;
 
   /**
    * PolkitUnixProcess:pid:
@@ -336,6 +459,58 @@ polkit_unix_process_class_init (PolkitUnixProcessClass *klass)
                                                         G_PARAM_STATIC_BLURB |
                                                         G_PARAM_STATIC_NICK));
 
+  /**
+   * PolkitUnixProcess:pidfd:
+   *
+   * The UNIX process id file descriptor.
+   */
+  g_object_class_install_property (gobject_class,
+                                   PROP_PIDFD,
+                                   g_param_spec_int ("pidfd",
+                                                     "Process ID FD",
+                                                     "The UNIX process ID file descriptor",
+                                                     -1,
+                                                     G_MAXINT,
+                                                     -1,
+                                                     G_PARAM_CONSTRUCT |
+                                                     G_PARAM_READWRITE |
+                                                     G_PARAM_STATIC_NAME |
+                                                     G_PARAM_STATIC_BLURB |
+                                                     G_PARAM_STATIC_NICK));
+
+  /**
+   * PolkitUnixProcess:pidfd_is_safe:
+   *
+   * Whether the UNIX process id file descriptor is safe end-to-end
+   * or it was opened locally.
+   */
+  g_object_class_install_property (gobject_class,
+                                   PROP_PIDFD_IS_SAFE,
+                                   g_param_spec_boolean ("pidfd-is-safe",
+                                                         "Process ID FD",
+                                                         "Whether the UNIX process ID file descriptor is safe",
+                                                         FALSE,
+                                                         G_PARAM_READABLE |
+                                                         G_PARAM_STATIC_NAME |
+                                                         G_PARAM_STATIC_BLURB |
+                                                         G_PARAM_STATIC_NICK));
+
+  /**
+   * PolkitUnixProcess:gids:
+   *
+   * The UNIX group ids of the process.
+   */
+  g_object_class_install_property (gobject_class,
+                                   PROP_GIDS,
+                                   g_param_spec_boxed ("gids",
+                                                       "Group IDs",
+                                                       "The UNIX group IDs",
+                                                       G_TYPE_ARRAY,
+                                                       G_PARAM_CONSTRUCT |
+                                                       G_PARAM_READWRITE |
+                                                       G_PARAM_STATIC_NAME |
+                                                       G_PARAM_STATIC_BLURB |
+                                                       G_PARAM_STATIC_NICK));
 }
 
 /**
@@ -376,6 +551,44 @@ polkit_unix_process_set_uid (PolkitUnixProcess *process,
 }
 
 /**
+ * polkit_unix_process_get_gids:
+ * @process: A #PolkitUnixProcess.
+ *
+ * Gets the group ids for @process. Note that this is the real group-ids,
+ * not the effective group-ids.
+ *
+ * Returns: (element-type GArray) (transfer full) (allow-none): a #GArray
+ *          of #gid_t containing the group ids for @process or NULL if unknown,
+ *          as a new reference to the array, caller must deref it when done.
+ */
+GArray *
+polkit_unix_process_get_gids (PolkitUnixProcess *process)
+{
+  g_return_val_if_fail (POLKIT_IS_UNIX_PROCESS (process), NULL);
+  return process->gids ? g_array_ref (process->gids) : NULL;
+}
+
+/**
+ * polkit_unix_process_set_gids:
+ * @process: A #PolkitUnixProcess.
+ * @gids: (element-type GArray): A #GList of #gid_t containing the group
+ *        ids to set for @process or NULL to unset them.
+ *        A reference to @gids is taken.
+ *
+ * Sets the (real, not effective) group ids for @process.
+ */
+void
+polkit_unix_process_set_gids (PolkitUnixProcess *process,
+                              GArray            *gids)
+{
+  g_return_if_fail (POLKIT_IS_UNIX_PROCESS (process));
+  if (process->gids)
+    g_array_unref (g_steal_pointer (&process->gids));
+  if (gids)
+    process->gids = g_array_ref (gids);
+}
+
+/**
  * polkit_unix_process_get_pid:
  * @process: A #PolkitUnixProcess.
  *
@@ -387,6 +600,19 @@ gint
 polkit_unix_process_get_pid (PolkitUnixProcess *process)
 {
   g_return_val_if_fail (POLKIT_IS_UNIX_PROCESS (process), 0);
+
+  if (process->pidfd >= 0)
+    {
+      GError *error = NULL;
+      gint pid = polkit_unix_process_get_pid_from_pidfd(process, &error);
+
+      if (pid > 0)
+        return pid;
+
+      g_error_free (error);
+      return 0;
+    }
+
   return process->pid;
 }
 
@@ -432,7 +658,79 @@ polkit_unix_process_set_pid (PolkitUnixProcess *process,
                              gint              pid)
 {
   g_return_if_fail (POLKIT_IS_UNIX_PROCESS (process));
+
+#ifdef HAVE_PIDFD_OPEN
+  if (process->pidfd >= 0)
+    {
+      close (process->pidfd);
+      process->pidfd = -1;
+      process->pidfd_is_safe = FALSE;
+    }
+  if (pid > 0)
+    {
+      gint pidfd = (int) syscall (SYS_pidfd_open, process->pid, 0);
+      if (pidfd >= 0)
+        {
+          process->pidfd_is_safe = FALSE;
+          process->pidfd = pidfd;
+          process->pid = 0;
+          return;
+        }
+    }
+#endif /* HAVE_PIDFD_OPEN */
+
   process->pid = pid;
+}
+
+/**
+ * polkit_unix_process_get_pidfd:
+ * @process: A #PolkitUnixProcess.
+ *
+ * Gets the process id file descriptor for @process.
+ *
+ * Returns: The process id file descriptor for @process.
+ */
+gint
+polkit_unix_process_get_pidfd (PolkitUnixProcess *process)
+{
+  g_return_val_if_fail (POLKIT_IS_UNIX_PROCESS (process), -1);
+  return process->pidfd;
+}
+
+/**
+ * polkit_unix_process_get_pidfd_is_safe:
+ * @process: A #PolkitUnixProcess.
+ *
+ * Checks if the process id file descriptor for @process is safe
+ * or if it was opened locally and thus vulnerable to reuse.
+ *
+ * Returns: TRUE or FALSE.
+ */
+gboolean
+polkit_unix_process_get_pidfd_is_safe (PolkitUnixProcess *process)
+{
+  g_return_val_if_fail (POLKIT_IS_UNIX_PROCESS (process), FALSE);
+  return process->pidfd_is_safe;
+}
+
+/**
+ * polkit_unix_process_set_pidfd:
+ * @process: A #PolkitUnixProcess.
+ * @pidfd: A process id file descriptor.
+ *
+ * Sets @pidfd for @process.
+ */
+void
+polkit_unix_process_set_pidfd (PolkitUnixProcess *process,
+                               gint               pidfd)
+{
+  g_return_if_fail (POLKIT_IS_UNIX_PROCESS (process));
+  if (process->pidfd >= 0)
+    {
+      close (process->pidfd);
+      process->pidfd_is_safe = FALSE;
+    }
+  process->pidfd = pidfd;
 }
 
 /**
@@ -500,12 +798,34 @@ polkit_unix_process_new_for_owner (gint    pid,
                                        NULL));
 }
 
+/**
+ * polkit_unix_process_new_pidfd:
+ * @pidfd: The process id file descriptor.
+ * @uid: The (real, not effective) uid of the owner of @pid or -1 to look it up in e.g. <filename>/proc</filename>.
+ * @gids: (element-type gint) (allow-none): The (real, not effective) gids of the owner of @pid or %NULL.
+ *
+ * Creates a new #PolkitUnixProcess object for @pidfd and @uid.
+ *
+ * Returns: (transfer full): A #PolkitSubject. Free with g_object_unref().
+ */
+PolkitSubject *
+polkit_unix_process_new_pidfd (gint    pidfd,
+                               gint    uid,
+                               GArray *gids)
+{
+  return POLKIT_SUBJECT (g_object_new (POLKIT_TYPE_UNIX_PROCESS,
+                                       "pidfd", pidfd,
+                                       "uid", uid,
+                                       "gids", gids,
+                                       NULL));
+}
+
 static guint
 polkit_unix_process_hash (PolkitSubject *subject)
 {
   PolkitUnixProcess *process = POLKIT_UNIX_PROCESS (subject);
 
-  return g_direct_hash (GSIZE_TO_POINTER ((process->pid + process->start_time))) ;
+  return g_direct_hash (GSIZE_TO_POINTER ((polkit_unix_process_get_pid(process) + process->start_time))) ;
 }
 
 static gboolean
@@ -514,21 +834,35 @@ polkit_unix_process_equal (PolkitSubject *a,
 {
   PolkitUnixProcess *process_a;
   PolkitUnixProcess *process_b;
+  gint pid_a, pid_b;
+  gint pidfd_a, pidfd_b;
 
   process_a = POLKIT_UNIX_PROCESS (a);
   process_b = POLKIT_UNIX_PROCESS (b);
 
+  pid_a = polkit_unix_process_get_pid(process_a);
+  pid_b = polkit_unix_process_get_pid(process_b);
+
+  pidfd_a = polkit_unix_process_get_pidfd(process_a);
+  pidfd_b = polkit_unix_process_get_pidfd(process_b);
+
   return
-    (process_a->pid == process_b->pid) &&
-    (process_a->start_time == process_b->start_time);
+    (pid_a > 0) &&
+    (pid_b > 0) &&
+    (pid_a == pid_b) &&
+    ((pidfd_a >= 0 && pidfd_b >= 0) ||
+     (process_a->start_time == process_b->start_time));
 }
 
 static gchar *
 polkit_unix_process_to_string (PolkitSubject *subject)
 {
   PolkitUnixProcess *process = POLKIT_UNIX_PROCESS (subject);
+  gint pid = polkit_unix_process_get_pid(process);
+  if (pid <= 0)
+    return g_strdup_printf ("unix-process:unknown");
 
-  return g_strdup_printf ("unix-process:%d:%" G_GUINT64_FORMAT, process->pid, process->start_time);
+  return g_strdup_printf ("unix-process:%d:%" G_GUINT64_FORMAT, pid, process->start_time);
 }
 
 static gboolean
@@ -540,11 +874,21 @@ polkit_unix_process_exists_sync (PolkitSubject   *subject,
   GError *local_error;
   guint64 start_time;
   gboolean ret;
+  gint pid;
 
   ret = TRUE;
 
+  pid = polkit_unix_process_get_pid(process);
+  if (pid <= 0)
+    return FALSE;
+
+  /* If we have both a valid PID and a PID FD then we know the process is still the
+   * same and it hasn't exited. */
+  if (polkit_unix_process_get_pidfd(process) >= 0)
+    return TRUE;
+
   local_error = NULL;
-  start_time = get_start_time_for_pid (process->pid, &local_error);
+  start_time = get_start_time_for_pid (pid, &local_error);
   if (local_error != NULL)
     {
       /* Don't propagate the error - it just means there is no process with this pid */
@@ -797,7 +1141,7 @@ gint
 polkit_unix_process_get_racy_uid__ (PolkitUnixProcess  *process,
                                     GError            **error)
 {
-  gint result;
+  gint result, pid;
   gchar *contents;
   gchar **lines;
   guint64 start_time;
@@ -818,14 +1162,24 @@ polkit_unix_process_get_racy_uid__ (PolkitUnixProcess  *process,
   lines = NULL;
   contents = NULL;
 
+  pid = polkit_unix_process_get_pid(process);
+  if (pid <= 0)
+    {
+      g_set_error (error,
+                   POLKIT_ERROR,
+                   POLKIT_ERROR_FAILED,
+                   "Process not found");
+      goto out;
+    }
+
 #if defined(HAVE_FREEBSD) || defined(HAVE_NETBSD) || defined(HAVE_OPENBSD)
-  if (get_kinfo_proc (process->pid, &p) == 0)
+  if (get_kinfo_proc (pid, &p) == 0)
     {
       g_set_error (error,
                    POLKIT_ERROR,
                    POLKIT_ERROR_FAILED,
                    "get_kinfo_proc() failed for pid %d: %s",
-                   process->pid,
+                   pid,
                    g_strerror (errno));
       goto out;
     }
@@ -843,7 +1197,7 @@ polkit_unix_process_get_racy_uid__ (PolkitUnixProcess  *process,
    *
    * Uid, Gid: Real, effective, saved set,  and  file  system  UIDs (GIDs).
    */
-  g_snprintf (filename, sizeof filename, "/proc/%d/status", process->pid);
+  g_snprintf (filename, sizeof filename, "/proc/%d/status", pid);
   if (!g_file_get_contents (filename,
                             &contents,
                             NULL,
@@ -886,7 +1240,7 @@ found:
    * before and after reading the UID, it couldn't have changed.
    */
   local_error = NULL;
-  start_time = get_start_time_for_pid (process->pid, &local_error);
+  start_time = get_start_time_for_pid (pid, &local_error);
   if (local_error != NULL)
     {
       g_propagate_error (error, local_error);
@@ -897,7 +1251,7 @@ found:
   if (process->start_time != start_time)
     {
       g_set_error (error, POLKIT_ERROR, POLKIT_ERROR_FAILED,
-		   "process with PID %d has been replaced", process->pid);
+		   "process with PID %d has been replaced", pid);
       goto out;
     }
 

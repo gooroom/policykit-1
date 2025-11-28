@@ -65,7 +65,7 @@ static gboolean execute_script_with_runaway_killer(PolkitBackendJsAuthority *aut
 
 /* ---------------------------------------------------------------------------------------------------- */
 
-G_DEFINE_TYPE (PolkitBackendJsAuthority, polkit_backend_js_authority, POLKIT_BACKEND_TYPE_INTERACTIVE_AUTHORITY);
+G_DEFINE_TYPE_WITH_PRIVATE (PolkitBackendJsAuthority, polkit_backend_js_authority, POLKIT_BACKEND_TYPE_INTERACTIVE_AUTHORITY);
 
 /* ---------------------------------------------------------------------------------------------------- */
 
@@ -86,6 +86,7 @@ static void report_error (void     *udata,
 {
     PolkitBackendJsAuthority *authority = udata;
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "fatal Duktape JS backend error: %s",
                                   (msg ? msg : "no message"));
 }
@@ -93,9 +94,7 @@ static void report_error (void     *udata,
 static void
 polkit_backend_js_authority_init (PolkitBackendJsAuthority *authority)
 {
-  authority->priv = G_TYPE_INSTANCE_GET_PRIVATE (authority,
-                                                 POLKIT_BACKEND_TYPE_JS_AUTHORITY,
-                                                 PolkitBackendJsAuthorityPrivate);
+  authority->priv = polkit_backend_js_authority_get_instance_private (authority);
 }
 
 static void
@@ -115,20 +114,14 @@ load_scripts (PolkitBackendJsAuthority  *authority)
       GDir *dir = NULL;
 
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_NOTICE,
                                     "Loading rules from directory %s",
                                     dir_name);
 
       dir = g_dir_open (dir_name,
                         0,
                         &error);
-      if (dir == NULL)
-        {
-          polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
-                                        "Error opening rules directory: %s (%s, %d)",
-                                        error->message, g_quark_to_string (error->domain), error->code);
-          g_clear_error (&error);
-        }
-      else
+      if (dir != NULL)
         {
           const gchar *name;
           while ((name = g_dir_read_name (dir)) != NULL)
@@ -137,6 +130,14 @@ load_scripts (PolkitBackendJsAuthority  *authority)
                 files = g_list_prepend (files, g_strdup_printf ("%s/%s", dir_name, name));
             }
           g_dir_close (dir);
+        }
+      else
+        {
+          polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                        LOG_LEVEL_NOTICE,
+                                        "Error opening rules directory: %s (%s, %d)",
+                                        error->message, g_quark_to_string (error->domain), error->code);
+          g_clear_error (&error);
         }
     }
 
@@ -149,9 +150,14 @@ load_scripts (PolkitBackendJsAuthority  *authority)
       if (!execute_script_with_runaway_killer(authority, filename))
           continue;
       num_scripts++;
+      polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                      LOG_LEVEL_DEBUG,
+                                      "Loaded and executed script in file %s",
+                                      filename);
     }
 
   polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                LOG_LEVEL_NOTICE,
                                 "Finished loading, compiling and executing %d rules",
                                 num_scripts);
   g_list_free_full (files, g_free);
@@ -165,6 +171,7 @@ polkit_backend_common_reload_scripts (PolkitBackendJsAuthority *authority)
   duk_set_top (cx, 0);
   if (!duk_get_global_string (cx, "polkit")) {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error deleting old rules, not loading new ones");
       return;
   }
@@ -173,6 +180,7 @@ polkit_backend_common_reload_scripts (PolkitBackendJsAuthority *authority)
   duk_call_prop (cx, 0, 0);
 
   polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                LOG_LEVEL_NOTICE,
                                 "Collecting garbage unconditionally...");
 
   load_scripts (authority);
@@ -245,9 +253,11 @@ polkit_backend_common_js_authority_constructed (GObject *object)
 
   if (authority->priv->rules_dirs == NULL)
     {
-      authority->priv->rules_dirs = g_new0 (gchar *, 3);
+      authority->priv->rules_dirs = g_new0 (gchar *, 5);
       authority->priv->rules_dirs[0] = g_strdup (PACKAGE_SYSCONF_DIR "/polkit-1/rules.d");
-      authority->priv->rules_dirs[1] = g_strdup (PACKAGE_DATA_DIR "/polkit-1/rules.d");
+      authority->priv->rules_dirs[1] = g_strdup ("/run/polkit-1/rules.d");
+      authority->priv->rules_dirs[2] = g_strdup ("/usr/local/share/polkit-1/rules.d");
+      authority->priv->rules_dirs[3] = g_strdup (PACKAGE_DATA_DIR "/polkit-1/rules.d");
     }
 
   setup_file_monitors (authority);
@@ -308,7 +318,6 @@ static void
 polkit_backend_js_authority_class_init (PolkitBackendJsAuthorityClass *klass)
 {
   polkit_backend_common_js_authority_class_init_common (klass);
-  g_type_class_add_private (klass, sizeof (PolkitBackendJsAuthorityPrivate));
 }
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -366,13 +375,18 @@ push_subject (duk_context               *cx,
               GError                   **error)
 {
   gboolean ret = FALSE;
-  pid_t pid;
+  gboolean no_new_privs = FALSE;
+  gint pidfd = -1;
+  pid_t pid_early, pid_late;
   uid_t uid;
+  PolkitSubject *process = NULL;
   gchar *user_name = NULL;
   GPtrArray *groups = NULL;
+  GArray *gids_from_dbus = NULL;
   struct passwd *passwd;
   char *seat_str = NULL;
   char *session_str = NULL;
+  char *system_unit = NULL;
 
   if (!duk_get_global_string (cx, "Subject")) {
     return FALSE;
@@ -382,92 +396,160 @@ push_subject (duk_context               *cx,
 
   if (POLKIT_IS_UNIX_PROCESS (subject))
     {
-      pid = polkit_unix_process_get_pid (POLKIT_UNIX_PROCESS (subject));
+      process = subject;
     }
   else if (POLKIT_IS_SYSTEM_BUS_NAME (subject))
     {
-      PolkitSubject *process;
       process = polkit_system_bus_name_get_process_sync (POLKIT_SYSTEM_BUS_NAME (subject), NULL, error);
       if (process == NULL)
         goto out;
-      pid = polkit_unix_process_get_pid (POLKIT_UNIX_PROCESS (process));
-      g_object_unref (process);
     }
   else
     {
       g_assert_not_reached ();
     }
 
+  pid_early = polkit_unix_process_get_pid (POLKIT_UNIX_PROCESS (process));
+  pidfd = polkit_unix_process_get_pidfd (POLKIT_UNIX_PROCESS (process));
+
 #ifdef HAVE_LIBSYSTEMD
-  if (sd_pid_get_session (pid, &session_str) == 0)
-    {
-      if (sd_session_get_seat (session_str, &seat_str) == 0)
-        {
-          /* do nothing */
-        }
-    }
+#if HAVE_SD_PIDFD_GET_SESSION
+  if (pidfd >= 0)
+    sd_pidfd_get_session (pidfd, &session_str);
+  else
+#endif /* HAVE_SD_PIDFD_GET_SESSION */
+    sd_pid_get_session (pid_early, &session_str);
+  if (session_str)
+    sd_session_get_seat (session_str, &seat_str);
 #endif /* HAVE_LIBSYSTEMD */
 
   g_assert (POLKIT_IS_UNIX_USER (user_for_subject));
   uid = polkit_unix_user_get_uid (POLKIT_UNIX_USER (user_for_subject));
 
   groups = g_ptr_array_new_with_free_func (g_free);
+  gids_from_dbus = polkit_unix_process_get_gids (POLKIT_UNIX_PROCESS (process));
 
-  passwd = getpwuid (uid);
-  if (passwd == NULL)
+passwd = getpwuid (uid);
+if (passwd == NULL)
+  {
+    user_name = g_strdup_printf ("%d", (gint) uid);
+    g_warning ("Error looking up info for uid %d: %m", (gint) uid);
+  }
+else
+  {
+    user_name = g_strdup (passwd->pw_name);
+  }
+
+  /* D-Bus will give us supplementary groups too, so prefer that to looking up
+   * the group from the uid. */
+  if (gids_from_dbus && gids_from_dbus->len > 0)
     {
-      user_name = g_strdup_printf ("%d", (gint) uid);
-      g_warning ("Error looking up info for uid %d: %m", (gint) uid);
+      gint n;
+      for (n = 0; n < gids_from_dbus->len; n++)
+        {
+          struct group *group;
+          group = getgrgid (g_array_index (gids_from_dbus, gid_t, n));
+          if (group == NULL)
+            {
+              g_ptr_array_add (groups, g_strdup_printf ("%d", (gint) g_array_index (gids_from_dbus, gid_t, n)));
+            }
+          else
+            {
+              g_ptr_array_add (groups, g_strdup (group->gr_name));
+            }
+        }
     }
   else
     {
-      gid_t gids[512];
-      int num_gids = 512;
-
-      user_name = g_strdup (passwd->pw_name);
-
-      if (getgrouplist (passwd->pw_name,
-                        passwd->pw_gid,
-                        gids,
-                        &num_gids) < 0)
+      if (passwd != NULL)
         {
-          g_warning ("Error looking up groups for uid %d: %m", (gint) uid);
-        }
-      else
-        {
-          gint n;
-          for (n = 0; n < num_gids; n++)
+          gid_t gids[512];
+          int num_gids = 512;
+
+          if (getgrouplist (passwd->pw_name,
+                            passwd->pw_gid,
+                            gids,
+                            &num_gids) < 0)
             {
-              struct group *group;
-              group = getgrgid (gids[n]);
-              if (group == NULL)
+              g_warning ("Error looking up groups for uid %d: %m", (gint) uid);
+            }
+          else
+            {
+              gint n;
+              for (n = 0; n < num_gids; n++)
                 {
-                  g_ptr_array_add (groups, g_strdup_printf ("%d", (gint) gids[n]));
-                }
-              else
-                {
-                  g_ptr_array_add (groups, g_strdup (group->gr_name));
+                  struct group *group;
+                  group = getgrgid (gids[n]);
+                  if (group == NULL)
+                    {
+                      g_ptr_array_add (groups, g_strdup_printf ("%d", (gint) gids[n]));
+                    }
+                  else
+                    {
+                      g_ptr_array_add (groups, g_strdup (group->gr_name));
+                    }
                 }
             }
         }
     }
 
-  set_property_int32 (cx, "pid", pid);
+  /* Query the unit, will work only if we got the pidfd from dbus-daemon/broker.
+   * Best-effort operation, will log on failure, but we don't bail here. But
+   * only do so if the pidfd was marked as safe, i.e.: we got it from D-Bus so
+   * it can be trusted end-to-end, with no reuse attack window.  */
+  if (polkit_unix_process_get_pidfd_is_safe (POLKIT_UNIX_PROCESS (process)))
+    polkit_backend_common_pidfd_to_systemd_unit (pidfd, &system_unit, &no_new_privs);
+
+  /* In case we are using PIDFDs, check that the PID still matches to avoid race
+   * conditions and PID recycle attacks.
+   */
+  pid_late = polkit_unix_process_get_pid (POLKIT_UNIX_PROCESS (process));
+  if (pid_late != pid_early)
+    {
+      if (pid_late <= 0)
+        {
+          g_warning ("Process %d terminated", (gint) pid_early);
+          g_set_error (error,
+                       POLKIT_ERROR,
+                       POLKIT_ERROR_FAILED,
+                       "Process %d terminated", (gint) pid_early);
+        }
+      else
+      {
+        g_warning ("Process changed pid from %d to %d", (gint) pid_early, (gint) pid_late);
+        g_set_error (error,
+                     POLKIT_ERROR,
+                     POLKIT_ERROR_FAILED,
+                     "Process changed pid from %d to %d", (gint) pid_early, (gint) pid_late);
+      }
+      goto out;
+    }
+
+  set_property_int32 (cx, "pid", pid_early);
   set_property_str (cx, "user", user_name);
   set_property_strv (cx, "groups", groups);
   set_property_str (cx, "seat", seat_str);
   set_property_str (cx, "session", session_str);
+  set_property_str (cx, "system_unit", system_unit);
+  /* If we have a unit, also record if it has the NoNewPrivileges setting enabled */
+  if (system_unit)
+    set_property_bool (cx, "no_new_privileges", no_new_privs);
   set_property_bool (cx, "local", subject_is_local);
   set_property_bool (cx, "active", subject_is_active);
 
   ret = TRUE;
 
  out:
+  if (POLKIT_IS_SYSTEM_BUS_NAME (subject))
+    g_object_unref (process);
   free (session_str);
   free (seat_str);
+  free (system_unit);
   g_free (user_name);
   if (groups != NULL)
     g_ptr_array_unref (groups);
+  if (gids_from_dbus != NULL)
+    g_array_unref (gids_from_dbus);
 
   return ret;
 }
@@ -477,8 +559,7 @@ push_subject (duk_context               *cx,
 static gboolean
 push_action_and_details (duk_context               *cx,
                          const gchar               *action_id,
-                         PolkitDetails             *details,
-                         GError                   **error)
+                         PolkitDetails             *details)
 {
   gchar **keys;
   guint n;
@@ -526,6 +607,7 @@ runaway_killer_thread_execute_js (gpointer user_data)
 
   if ((pthread_err = pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &oldtype))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error setting thread cancel type: %s",
                                   strerror(pthread_err));
     goto err;
@@ -537,6 +619,7 @@ runaway_killer_thread_execute_js (gpointer user_data)
 
   if (!g_file_load_contents(file, NULL, &contents, &len, NULL, NULL)) {
     polkit_backend_authority_log(POLKIT_BACKEND_AUTHORITY(ctx->authority),
+                                 LOG_LEVEL_ERROR,
                                  "Error loading script %s", ctx->filename);
     g_object_unref(file);
     goto err;
@@ -549,6 +632,7 @@ runaway_killer_thread_execute_js (gpointer user_data)
   if (duk_peval_lstring(cx, contents, len) != 0)
   {
     polkit_backend_authority_log(POLKIT_BACKEND_AUTHORITY(ctx->authority),
+                                 LOG_LEVEL_ERROR,
                                  "Error compiling script %s: %s", ctx->filename,
                                  duk_safe_to_string(cx, -1));
     duk_pop(cx);
@@ -556,17 +640,40 @@ runaway_killer_thread_execute_js (gpointer user_data)
   }
   g_free(contents);
 
+  if ((pthread_err = pthread_mutex_lock(&ctx->mutex))) {
+    polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
+                                  "Error locking mutex: %s",
+                                  strerror(pthread_err));
+    return NULL;
+  }
+
   ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_SUCCESS;
   goto end;
 
 free_err:
   g_free(contents);
 err:
+  if ((pthread_err = pthread_mutex_lock(&ctx->mutex))) {
+    polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
+                                  "Error locking mutex: %s",
+                                  strerror(pthread_err));
+    return NULL;
+  }
   ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_FAILURE;
 end:
   if ((pthread_err = pthread_cond_signal(&ctx->cond))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error signaling on condition variable: %s",
+                                  strerror(pthread_err));
+    ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_FAILURE;
+  }
+  if ((pthread_err = pthread_mutex_unlock(&ctx->mutex))) {
+    polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
+                                  "Error unlocking mutex: %s",
                                   strerror(pthread_err));
     ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_FAILURE;
   }
@@ -582,6 +689,7 @@ runaway_killer_thread_call_js (gpointer user_data)
 
   if ((pthread_err = pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &oldtype))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error setting thread cancel type: %s",
                                   strerror(pthread_err));
     goto err;
@@ -590,23 +698,48 @@ runaway_killer_thread_call_js (gpointer user_data)
   if (duk_pcall_prop (cx, 0, 2) != DUK_EXEC_SUCCESS)
     {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error evaluating admin rules: %s",
                                     duk_safe_to_string (cx, -1));
       goto err;
     }
 
+  if ((pthread_err = pthread_mutex_lock(&ctx->mutex))) {
+    polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
+                                  "Error locking mutex: %s",
+                                  strerror(pthread_err));
+    return NULL;
+  }
+
   ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_SUCCESS;
   goto end;
 
 err:
+  if ((pthread_err = pthread_mutex_lock(&ctx->mutex))) {
+    polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
+                                  "Error locking mutex: %s",
+                                  strerror(pthread_err));
+    return NULL;
+  }
   ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_FAILURE;
 end:
   if ((pthread_err = pthread_cond_signal(&ctx->cond))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error signaling on condition variable: %s",
                                   strerror(pthread_err));
     ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_FAILURE;
   }
+  if ((pthread_err = pthread_mutex_unlock(&ctx->mutex))) {
+    polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (ctx->authority),
+                                  LOG_LEVEL_ERROR,
+                                  "Error unlocking mutex: %s",
+                                  strerror(pthread_err));
+    ctx->ret = RUNAWAY_KILLER_THREAD_EXIT_STATUS_FAILURE;
+  }
+
   return NULL;
 }
 
@@ -629,18 +762,22 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
 {
   int pthread_err;
   gboolean cancel = FALSE;
+#ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
   pthread_condattr_t attr;
+#endif
   struct timespec abs_time;
 
 #ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
   if ((pthread_err = pthread_condattr_init(&attr))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error initializing condition variable attributes: %s",
                                   strerror(pthread_err));
     return FALSE;
   }
   if ((pthread_err = pthread_condattr_setclock(&attr, PK_CLOCK))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error setting condition variable attributes: %s",
                                   strerror(pthread_err));
     goto err_clean_condattr;
@@ -648,6 +785,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
   /* Init again, with needed attr */
   if ((pthread_err = pthread_cond_init(&ctx->cond, &attr))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error initializing condition variable: %s",
                                   strerror(pthread_err));
     goto err_clean_condattr;
@@ -656,6 +794,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
 
   if ((pthread_err = pthread_mutex_lock(&ctx->mutex))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error locking mutex: %s",
                                   strerror(pthread_err));
     goto err_clean_cond;
@@ -663,6 +802,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
 
   if (clock_gettime(PK_CLOCK, &abs_time)) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error getting system's monotonic time: %s",
                                   strerror(errno));
     goto err_clean_cond;
@@ -672,6 +812,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
   if ((pthread_err = pthread_create(&authority->priv->runaway_killer_thread, NULL,
                                     js_context_cb, ctx))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error creating runaway JS killer thread: %s",
                                   strerror(pthread_err));
     goto err_clean_cond;
@@ -683,6 +824,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
 
       /* Log that we are terminating the script */
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_WARNING,
                                     "Terminating runaway script after %d seconds",
                                     RUNAWAY_KILLER_TIMEOUT);
 
@@ -691,6 +833,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
 
   if ((pthread_err = pthread_mutex_unlock(&ctx->mutex))) {
     polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                  LOG_LEVEL_ERROR,
                                   "Error unlocking mutex: %s",
                                   strerror(pthread_err));
     goto err_clean_cond;
@@ -699,6 +842,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
   if (cancel) {
     if ((pthread_err = pthread_cancel (authority->priv->runaway_killer_thread))) {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error cancelling runaway JS killer thread: %s",
                                     strerror(pthread_err));
       goto err_clean_cond;
@@ -706,6 +850,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
   }
   if ((pthread_err = pthread_join (authority->priv->runaway_killer_thread, NULL))) {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error joining runaway JS killer thread: %s",
                                     strerror(pthread_err));
       goto err_clean_cond;
@@ -716,9 +861,7 @@ runaway_killer_common(PolkitBackendJsAuthority *authority, RunawayKillerCtx *ctx
     err_clean_cond:
 #ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
   pthread_cond_destroy(&ctx->cond);
-#endif
     err_clean_condattr:
-#ifdef HAVE_PTHREAD_CONDATTR_SETCLOCK
   pthread_condattr_destroy(&attr);
 #endif
   return FALSE;
@@ -775,24 +918,25 @@ polkit_backend_common_js_authority_get_admin_auth_identities (PolkitBackendInter
   duk_set_top (cx, 0);
   if (!duk_get_global_string (cx, "polkit")) {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error deleting old rules, not loading new ones");
       goto out;
   }
 
   duk_push_string (cx, "_runAdminRules");
 
-  if (!push_action_and_details (cx, action_id, details, &error))
+  if (!push_action_and_details (cx, action_id, details))
     {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
-                                    "Error converting action and details to JS object: %s",
-                                    error->message);
-      g_clear_error (&error);
+                                    LOG_LEVEL_ERROR,
+                                    "Error converting action and details to JS object");
       goto out;
     }
 
   if (!push_subject (cx, subject, user_for_subject, subject_is_local, subject_is_active, &error))
     {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error converting subject to JS object: %s",
                                     error->message);
       g_clear_error (&error);
@@ -815,6 +959,7 @@ polkit_backend_common_js_authority_get_admin_auth_identities (PolkitBackendInter
       if (identity == NULL)
         {
           polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                        LOG_LEVEL_WARNING,
                                         "Identity `%s' is not valid, ignoring: %s",
                                         identity_str, error->message);
           g_clear_error (&error);
@@ -862,18 +1007,18 @@ polkit_backend_common_js_authority_check_authorization_sync (PolkitBackendIntera
 
   duk_push_string (cx, "_runRules");
 
-  if (!push_action_and_details (cx, action_id, details, &error))
+  if (!push_action_and_details (cx, action_id, details))
     {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
-                                    "Error converting action and details to JS object: %s",
-                                    error->message);
-      g_clear_error (&error);
+                                    LOG_LEVEL_ERROR,
+                                    "Error converting action and details to JS object");
       goto out;
     }
 
   if (!push_subject (cx, subject, user_for_subject, subject_is_local, subject_is_active, &error))
     {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_ERROR,
                                     "Error converting subject to JS object: %s",
                                     error->message);
       g_clear_error (&error);
@@ -896,6 +1041,7 @@ polkit_backend_common_js_authority_check_authorization_sync (PolkitBackendIntera
   if (!polkit_implicit_authorization_from_string (ret_str, &ret))
     {
       polkit_backend_authority_log (POLKIT_BACKEND_AUTHORITY (authority),
+                                    LOG_LEVEL_WARNING,
                                     "Returned result `%s' is not valid",
                                     ret_str);
       goto out;
@@ -1018,7 +1164,12 @@ js_polkit_spawn (duk_context *cx)
     g_main_context_unref (context);
 
   if (err_str)
-    duk_error (cx, DUK_ERR_ERROR, err_str);
+    {
+      duk_push_error_object (cx, DUK_ERR_ERROR, err_str);
+      free (err_str);
+      duk_throw (cx);
+      g_assert_not_reached ();
+    }
 
   return ret;
 }

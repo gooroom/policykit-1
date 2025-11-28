@@ -1,3 +1,175 @@
+## polkit 126
+
+### Highlights:
+- many code fixes detected either by CI or the author himself (Frantisek Sumsal)
+- shellcheck and dependabot integration (Jan Macku)
+- search for rules in /usr/local/share rather than /usr/local/lib (Luca Boccassi)
+- Implement LogControl1 protocol for dynamic log level changes (Luca Boccassi)
+- read actions also from /etc/, /run/ and /usr/local/share/ (Luca Boccassi)
+- mozjs dropped in favor of duktape (Xi Ruoyao)
+- many other fixes in build system and polkit code (Many thanks to all the authors.)
+
+### Build requirements
+- glib, gobject, gio >= 2.32
+- duktape
+- gobject-introspection >= 0.6.2 (optional)
+- pam (optional)
+- ConsoleKit OR systemd-logind OR elogind
+- gettext
+- meson
+
+### People who made this version possible:
+Bastien Nocera
+Eli Schwartz
+Frantisek Sumsal
+Jan Macku
+KT-lcz
+Luca Boccassi
+Michael Biebl
+peelz
+Rafael Fontenelle
+Robert Ancell
+Sertonix
+Vincent Mihalkovic
+Xi Ruoyao
+Yoann Congal
+
+**Many thanks to the people involved, the contributors and enthusiasts!**
+
+The polkit team & polkit community
+Jan 13, 2025
+
+## polkit 125
+
+### Highlights:
+- introduction of CodeQL and a new integration test suite (Frantisek Sumsal)
+- dropped mocklibc (Frantisek Sumsal)
+- syslog-style log-levels introduction (Jan Rybar)
+- LogControl integration (Luca Boccassi)
+- pkexec: "No session for cookie" finally fixed (huxiaodong)
+- resources optimizations: only instances affected by sessions-change recalculate authorizations (Jan Rybar, thanks to Michal Sekletar and Milan Crha)
+- meson tweaks (Alyssa Ross, Luca Boccassi, Michael Biebl, Michael Olbrich)
+- build warnings cleanup (peelz)
+- Packit service configuration for the new upstream platform (Vincent Mihalkovic)
+- systemd-tmpfiles.d integration (Vincent Mihalkovic)
+- other fixes and changes (Gleb Popov, heather7283, Tianyu Chen, Tobias Stoeckmann)
+- internationalization: Slovenian (filmsi), Hindi (Scrambled777)
+
+### Build requirements
+- glib, gobject, gio >= 2.32
+- mozjs-115 OR duktape
+- gobject-introspection >= 0.6.2 (optional)
+- pam (optional)
+- ConsoleKit OR systemd-logind OR elogind
+- gettext
+- meson
+
+### People who made this version possible:
+Alyssa Ross
+filmsi
+Frantisek Sumsal
+Gleb Popov
+heather7283
+huxiaodong
+Jan Rybar
+Luca Boccassi
+Michael Biebl
+Michael Olbrich
+peelz
+Scrambled777
+Tianyu Chen
+Tobias Stoeckmann
+Vincent Mihalkovic
+
+**Many thanks to the people involved, the contributors and enthusiasts!**
+
+The polkit team & polkit community  
+Aug 8, 2024
+
+## polkit 124
+
+### Highlights:
+- PIDFDs are used if available to track processes
+- pidfd parameter available for CheckAuthorization()
+- systemd-sysuser enabled for polkit
+
+### Build requirements
+- glib, gobject, gio >= 2.32
+- mozjs-115 OR duktape
+- gobject-introspection >= 0.6.2 (optional)
+- pam (optional)
+- ConsoleKit OR systemd
+- gettext
+- meson
+
+### Changes since polkit 123:
+
+* Luca Boccassi
+    * PIDFD implementation and fixes/extensions around it
+    * new systemd_unit and no_new_privileges subject attributes 
+* Ray Strode, Sam James
+    * general and/or buildsystem fixes
+* Vincent Mihalkovic
+    * uninitialized pointer warning fix
+* Xi Ruoyao
+    * mozjs 115 dependency upgrade and fixes
+* Jan Rybar
+    * general fixes
+* Zbigniew Jędrzejewski-Szmek
+    * systemd-sysuser implementation
+* Aleksandr Melman, Anders Jonsson, AsciiWolf, Christian K, NorwayFun, Sabri Unal
+    * localization
+
+
+**Many thanks to the people involved, the contributors and enthusiasts!**
+
+The polkit team & polkit community  
+Jan 17, 2024
+
+## polkit 123
+
+### Highlights:
+- better safety with deeper resctiction of the configuration files
+- better safety with restricting the daemon's owner under systemd
+- better safety with the systemd unit sandboxing
+- less thread races during upload of the configuration
+
+### Build requirements
+- glib, gobject, gio >= 2.32
+- mozjs-102 OR duktape
+- gobject-introspection >= 0.6.2 (optional)
+- pam (optional)
+- ConsoleKit OR systemd
+- gettext
+- meson
+
+### Changes since polkit 122:
+
+* Laurent Gauthier
+    * prevent wrongful termination of runaway thread
+* Luca Boccassi
+    * Stop installing /usr/share/polkit-1/rules.d as 700/polkitd
+    * set User/Group and don't change uid/gid if already set
+* bboy_vi, liudun, Marco Trevisan, Marius Bakke, Matej Focko, Olivier Duchateau, Sam James, Val Packett
+    * general and/or buildsystem fixes
+* Topi Miettinen
+    * systemd service hardening
+* Vincent Mihalkovic
+    * Packit service integration
+    * pkcheck: manpage and help sync
+    * general fixes
+* Jan Rybar
+    * Packit service integration
+    * change of ownership of custom configs
+    * general fixes
+* Aleksandr Melman, Anders Jonsson, Jürgen Benvenuti, Piotr Drąg, Sabri Unal
+    * localization
+
+
+**Thanks to everyone involved for making this possible!**
+
+The polkit team & polkit community
+July 28, 2023
 ## polkit 122
 
 ### Highlights:
