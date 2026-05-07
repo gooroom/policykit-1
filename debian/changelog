@@ -1,3 +1,9 @@
+policykit-1 (126-2+grm5u1) gooroom-5.0; urgency=medium
+
+  * local package: Release for gooroom-5.0
+
+ -- jongkyung.woo <jkwoo@gooroom.kr>  Thu, 07 May 2026 15:48:48 +0900
+
 policykit-1 (126-2+grm5~alpha1) UNRELEASED; urgency=medium
 
   * Rebuild for gooroom-5.0
