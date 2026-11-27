@@ -28,7 +28,7 @@ jobs:
         phase: [BUILD_GCC, GCC, GCC_ASAN_UBSAN, BUILD_CLANG, CLANG]
     steps:
       - name: Repository checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install build & test dependencies
         run: |
